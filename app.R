@@ -8,7 +8,9 @@ library(sf)
 library(sfarrow)
 library(arrow)
 library(bslib)
-
+library(stars)
+library(interp)
+library(isoband)
 # Limit upload file size to 1000MB
 options(shiny.maxRequestSize = 1000 * 1024^2)
 
@@ -97,6 +99,7 @@ ui <- page_sidebar(
       accordion_panel(
         "5. Visual Settings",
         icon = icon("palette"),
+        radioButtons("render_style", "Map Style:", choices = c("Color Flood", "Contours", "Both"), selected = "Color Flood", inline = TRUE),
         checkboxInput("exclude_999", "Exclude Inactive Cells (h=999)", value = TRUE),
         checkboxInput("rev_colors", "Reverse Color Ramp", value = TRUE),
         radioButtons("color_mode", "Color Scale Type:", choices = c("Discrete Bins", "Continuous"), selected = "Discrete Bins"),
@@ -339,6 +342,53 @@ server <- function(input, output, session) {
     c(c_min, c_max)
   })
   
+  # Dynamic Contours
+  contour_data <- reactive({
+    req(map_data(), domain_pal(), input$render_style %in% c("Contours", "Both"))
+    df <- map_data() %>% filter(!is.na(h_color))
+    req(nrow(df) > 0)
+    
+    my_breaks <- pretty(domain_pal(), n = 10)
+    
+    tryCatch({
+      # Suppress sf warnings about centroids
+      pts <- suppressWarnings(st_centroid(df))
+      coords <- st_coordinates(pts)
+      
+      # Interpolate scattered centroids to grid
+      nx <- 200; ny <- 200
+      
+      # create mask via stars
+      mask_stars <- stars::st_rasterize(df %>% mutate(m = 1) %>% select(m), nx = nx, ny = ny)
+      mask_mat <- mask_stars[[1]]
+      
+      # Extract grid coords correctly oriented
+      dim_x <- stars::st_get_dimension_values(mask_stars, 1)
+      dim_y <- stars::st_get_dimension_values(mask_stars, 2)
+      xo <- sort(unique(dim_x))
+      yo <- sort(unique(dim_y))
+      
+      grid <- interp::interp(coords[, 1], coords[, 2], df$h_color, xo = xo, yo = yo)
+      
+      # Apply boundary clip (mask_mat has descending y natively)
+      mask_mat_flipped <- mask_mat[, ny:1]
+      grid$z[is.na(mask_mat_flipped)] <- NA
+      
+      # Generate smooth isolines (transpose z to fix mirror issue)
+      lines <- isoband::isolines(xo, yo, t(grid$z), levels = my_breaks)
+      cl_geom <- isoband::iso_to_sfg(lines)
+      
+      # Convert to sf
+      cl <- st_sf(h_color = as.numeric(names(cl_geom)), geometry = st_sfc(cl_geom, crs = 4326))
+      
+      # Extract midpoints for text labels
+      cl_pts <- suppressWarnings(st_point_on_surface(cl))
+      cl_pts$label <- as.character(cl_pts$h_color)
+      
+      list(lines = cl, labels = cl_pts)
+    }, error = function(e) NULL)
+  })
+  
   # WebGL Map Base
   output$my_rdeck <- renderRdeck({
     req(grid_outline())
@@ -385,25 +435,63 @@ server <- function(input, output, session) {
     
     tooltip_vars <- if (has_heads) rlang::expr(c(nodenumber, h)) else rlang::expr(c(nodenumber))
     
-    # Use rdeck's built-in scaling for GPU coloring
-    rdeck_proxy("my_rdeck") %>%
+    proxy <- rdeck_proxy("my_rdeck") %>%
       add_tile_layer(
         id = "google_sat",
         data = "https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}",
         pickable = FALSE
-      ) %>%
-      add_polygon_layer(
+      )
+      
+    if (input$render_style %in% c("Color Flood", "Both") || !has_heads) {
+      proxy <- proxy %>% add_polygon_layer(
         id = "head_layer",
         data = map_data(),
         get_polygon = geom,
         get_fill_color = !!fill_color_arg,
-        get_line_color = if(has_heads) "#00000000" else "#ffffff80",
+        get_line_color = if(has_heads && input$render_style == "Color Flood") "#00000000" else "#ffffff80",
         opacity = input$opacity,
         pickable = TRUE,
         auto_highlight = TRUE,
         highlight_color = "#ffffff80",
         tooltip = !!tooltip_vars
       )
+    } else {
+      proxy <- proxy %>% add_polygon_layer(id = "head_layer", data = map_data() %>% slice(0), get_polygon = geom)
+    }
+    
+    if (input$render_style %in% c("Contours", "Both") && has_heads) {
+      cl_data <- contour_data()
+      cl <- cl_data$lines
+      cl_pts <- cl_data$labels
+      
+      if (!is.null(cl) && nrow(cl) > 0) {
+        proxy <- proxy %>% add_path_layer(
+          id = "contour_layer",
+          data = cl,
+          get_path = geometry,
+          get_color = "#ffffff",
+          width_min_pixels = 2,
+          pickable = TRUE,
+          tooltip = c(h_color)
+        ) %>% add_text_layer(
+          id = "contour_labels",
+          data = cl_pts,
+          get_position = geometry,
+          get_text = label,
+          get_color = "#ffffff",
+          get_size = 14,
+          pickable = FALSE
+        )
+      } else {
+        proxy <- proxy %>% 
+          add_path_layer(id = "contour_layer", data = st_sf(geometry=st_sfc(), h_color=numeric()), get_path=geometry) %>%
+          add_text_layer(id = "contour_labels", data = st_sf(geometry=st_sfc(), label=character()), get_position=geometry, get_text=label)
+      }
+    } else {
+      proxy <- proxy %>% 
+        add_path_layer(id = "contour_layer", data = st_sf(geometry=st_sfc(), h_color=numeric()), get_path=geometry) %>%
+        add_text_layer(id = "contour_labels", data = st_sf(geometry=st_sfc(), label=character()), get_position=geometry, get_text=label)
+    }
   })
   
   # Handle map clicks
