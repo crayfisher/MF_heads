@@ -11,6 +11,7 @@ library(bslib)
 library(stars)
 library(interp)
 library(isoband)
+library(shinymanager)
 # Limit upload file size to 1000MB
 options(shiny.maxRequestSize = 1000 * 1024^2)
 
@@ -43,7 +44,21 @@ custom_css <- "
   .value-box { border-radius: 12px !important; border: 1px solid #1e293b !important; }
 "
 
-ui <- page_sidebar(
+# Secure credentials using environment variables
+# Pass the password at runtime via: docker run -e APP_PASSWORD="your_password" ...
+app_pass <- Sys.getenv("APP_PASSWORD")
+if (app_pass == "") {
+  app_pass <- "rgw_secret" # Fallback for local testing
+}
+
+credentials <- data.frame(
+  user = c("viewer"),
+  password = c(app_pass),
+  admin = c(FALSE),
+  stringsAsFactors = FALSE
+)
+
+ui <- secure_app(page_sidebar(
   title = "RGW Heads Visualizer (WebGL)",
   theme = app_theme,
   header = tags$head(
@@ -64,7 +79,8 @@ ui <- page_sidebar(
         "1. Data Uploads",
         icon = icon("cloud-upload-alt"),
         fileInput("upload_files", "Drop all files here (Grid .parquet, Heads .parquet, Times .csv)", 
-                  accept = c(".parquet", ".csv"), multiple = TRUE, buttonLabel = "Browse...")
+                  accept = c(".parquet", ".csv"), multiple = TRUE, buttonLabel = "Browse..."),
+        fileInput("upload_baseline", "Optional: Upload Baseline Heads (.parquet) for Drawdown", accept = c(".parquet"), multiple = FALSE, buttonLabel = "Browse...")
       ),
       accordion_panel(
         "2. File Status",
@@ -72,6 +88,7 @@ ui <- page_sidebar(
         div(style="font-size: 0.85em; line-height: 1.8;",
           uiOutput("status_grd"),
           uiOutput("status_hds"),
+          uiOutput("status_baseline"),
           uiOutput("status_time")
         )
       ),
@@ -99,6 +116,7 @@ ui <- page_sidebar(
       accordion_panel(
         "5. Visual Settings",
         icon = icon("palette"),
+        radioButtons("data_display", "Display Variable:", choices = c("Heads", "Drawdown"), selected = "Heads", inline = TRUE),
         radioButtons("render_style", "Map Style:", choices = c("Color Flood", "Contours", "Both"), selected = "Color Flood", inline = TRUE),
         checkboxInput("exclude_999", "Exclude Inactive Cells (h=999)", value = TRUE),
         checkboxInput("rev_colors", "Reverse Color Ramp", value = TRUE),
@@ -135,9 +153,13 @@ ui <- page_sidebar(
       )
     )
   )
-)
+))
 
 server <- function(input, output, session) {
+  
+  res_auth <- secure_server(
+    check_credentials = check_credentials(credentials)
+  )
   
   # Value Boxes
   output$status_text <- renderText({
@@ -171,6 +193,10 @@ server <- function(input, output, session) {
   output$status_hds <- renderUI({
     if (is.null(hds_path())) span(icon("times-circle"), " Heads missing", style="color:#ef4444")
     else span(icon("check-circle"), " Heads loaded", style="color:#10b981")
+  })
+  output$status_baseline <- renderUI({
+    if (is.null(hds2_path())) span(icon("info-circle"), " No Baseline (Drawdown disabled)", style="color:#94a3b8")
+    else span(icon("check-circle"), " Baseline loaded", style="color:#10b981")
   })
   output$status_time <- renderUI({
     if (is.null(time_path())) span(icon("times-circle"), " Times missing", style="color:#ef4444")
@@ -208,6 +234,11 @@ server <- function(input, output, session) {
     idx <- setdiff(idx_p, idx_g)
     if(length(idx) == 0) return(NULL)
     files$datapath[idx[1]]
+  })
+  
+  hds2_path <- reactive({
+    req(input$upload_baseline)
+    input$upload_baseline$datapath
   })
   
   time_path <- reactive({
@@ -274,9 +305,22 @@ server <- function(input, output, session) {
     lay_target <- as.integer(input$select_layer)
     
     # Push query down to Arrow / DuckDB
-    head_ds() %>%
+    h_df <- head_ds() %>%
       filter(SP == sp_target, layer == lay_target) %>%
       collect()
+      
+    if (input$data_display == "Drawdown" && !is.null(hds2_path())) {
+      h2_df <- open_dataset(hds2_path()) %>%
+        filter(SP == sp_target, layer == lay_target) %>%
+        collect()
+      if(nrow(h2_df) > 0) {
+        h_df <- h_df %>% inner_join(h2_df %>% rename(h_base = h), by = c("layer", "nodenumberL1", "SP"))
+        # Drawdown = Baseline - Scenario
+        h_df$h <- ifelse(h_df$h == 999 | h_df$h_base == 999, 999, h_df$h_base - h_df$h)
+      }
+    }
+    
+    h_df
   })
   
   # Join Slice with Geometry
@@ -528,7 +572,16 @@ server <- function(input, output, session) {
       filter(layer == lay_target, nodenumberL1 == nl1_target) %>%
       collect()
       
-    # Join with time dataframe
+    if (input$data_display == "Drawdown" && !is.null(hds2_path())) {
+      h2_time <- open_dataset(hds2_path()) %>%
+        filter(layer == lay_target, nodenumberL1 == nl1_target) %>%
+        collect()
+      if (nrow(h2_time) > 0) {
+        h_time <- h_time %>% inner_join(h2_time %>% rename(h_base = h), by = c("layer", "nodenumberL1", "SP"))
+        h_time$h <- ifelse(h_time$h == 999 | h_time$h_base == 999, 999, h_time$h_base - h_time$h)
+      }
+    }
+      
     h_time %>%
       left_join(time_df(), by = "SP")
   })
@@ -544,9 +597,9 @@ server <- function(input, output, session) {
       geom_line(linewidth = 1, color = "#10b981") +
       geom_point(size = 2, color = "#10b981", alpha = 0.7) +
       labs(
-        title = paste("Hydrograph for Node #", input$nodenumber),
+        title = paste(if(input$data_display == "Drawdown") "Drawdown Hydrograph for Node #" else "Hydrograph for Node #", input$nodenumber),
         x = lbls[time_col],
-        y = "Head / Drawdown"
+        y = if(input$data_display == "Drawdown") "Drawdown (m)" else "Head"
       ) +
       theme_minimal(base_family = "Inter") +
       theme(
