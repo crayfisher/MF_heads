@@ -1,386 +1,483 @@
-library(reticulate)
 library(shiny)
 library(plotly)
 library(DT)
 library(tidyverse)
 library(lubridate)
-library(leaflet)
+library(rdeck)
+library(sf)
+library(sfarrow)
+library(arrow)
+library(bslib)
 
-source("scripts/flopy_r.R")
-source("scripts/head_functions2.R")
-# Define UI for application 
-#file size up to 1000MB
-options(shiny.maxRequestSize = 1000*1024^2)
+# Limit upload file size to 1000MB
+options(shiny.maxRequestSize = 1000 * 1024^2)
 
-ui <- fluidPage(
-  uiOutput('page_content')
+# Define custom premium theme using bslib
+app_theme <- bs_theme(
+  bootswatch = "darkly",
+  primary = "#10b981", # Emerald
+  secondary = "#475569", # Slate
+  success = "#10b981",
+  info = "#0ea5e9", # Sky blue
+  base_font = font_google("Inter"),
+  heading_font = font_google("Outfit"),
+  bg = "#0f172a", # Dark slate background
+  fg = "#f8fafc" # Light grey text
+)
+
+# Custom CSS for modern design accents
+custom_css <- "
+  .navbar { border-bottom: 1px solid #1e293b !important; }
+  .card {
+    border: 1px solid #1e293b !important;
+    background-color: #1e293b !important;
+    border-radius: 12px !important;
+    box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1) !important;
+  }
+  .card-header { border-bottom: 1px solid #334155 !important; font-weight: 600 !important; }
+  .sidebar { background-color: #0f172a !important; border-right: 1px solid #1e293b !important; }
+  .accordion-button { background-color: #1e293b !important; color: #f8fafc !important; }
+  .accordion-button:not(.collapsed) { background-color: #334155 !important; color: #10b981 !important; }
+  .value-box { border-radius: 12px !important; border: 1px solid #1e293b !important; }
+"
+
+ui <- page_sidebar(
+  title = "RGW Heads Visualizer (WebGL)",
+  theme = app_theme,
+  header = tags$head(
+    tags$style(HTML(custom_css))
+  ),
+  sidebar = sidebar(
+    title = "Controls & Parameters",
+    bg = "#0f172a",
+    width = 350,
+    div(
+      style = "font-size: 0.85rem; background-color: #1e293b; padding: 10px; border-radius: 5px; margin-bottom: 15px; border: 1px solid #334155; line-height: 1.5;",
+      div(strong(icon("layer-group"), " Slice: "), textOutput("slice_text", inline = TRUE)),
+      div(strong(icon("map-pin"), " Node: "), textOutput("node_text", inline = TRUE))
+    ),
+    accordion(
+      open = c("1. Data Uploads", "3. Slicing & Extraction"),
+      accordion_panel(
+        "1. Data Uploads",
+        icon = icon("cloud-upload-alt"),
+        fileInput("upload_files", "Drop all files here (Grid .parquet, Heads .parquet, Times .csv)", 
+                  accept = c(".parquet", ".csv"), multiple = TRUE, buttonLabel = "Browse...")
+      ),
+      accordion_panel(
+        "2. File Status",
+        icon = icon("check-circle"),
+        div(style="font-size: 0.85em; line-height: 1.8;",
+          uiOutput("status_grd"),
+          uiOutput("status_hds"),
+          uiOutput("status_time")
+        )
+      ),
+      accordion_panel(
+        "3. Projection & Timeline",
+        icon = icon("calendar-alt"),
+        dateInput("start_date", "Model Start Date:", value = "2019-06-01", weekstart = 1)
+      ),
+      accordion_panel(
+        "4. Slicing & Extraction",
+        icon = icon("sliders-h"),
+        div(style = "display: flex; gap: 5px; align-items: flex-end;",
+            div(style = "flex-grow: 1;",
+                sliderInput("select_time", "Stress Period:", min = 1, max = 1, value = 1, step = 1,
+                            animate = animationOptions(interval = 1000, loop = FALSE))),
+            actionButton("prev_sp", "", icon = icon("step-backward"), class = "btn-secondary btn-sm", style = "margin-bottom: 1rem;"),
+            actionButton("next_sp", "", icon = icon("step-forward"), class = "btn-secondary btn-sm", style = "margin-bottom: 1rem;")
+        ),
+        numericInput("select_layer", "Select Layer:", value = 1, min = 1, step = 1),
+        radioButtons("radio_time_unit", "Hydrograph Time Axis:",
+                     choices = c("Time (Days)" = "time", "Stress Period" = "SP", "Calendar Date" = "date"),
+                     selected = "time"),
+        numericInput("nodenumber", "Extract Node ID:", value = 1, min = 1, step = 1)
+      ),
+      accordion_panel(
+        "5. Visual Settings",
+        icon = icon("palette"),
+        checkboxInput("exclude_999", "Exclude Inactive Cells (h=999)", value = TRUE),
+        checkboxInput("rev_colors", "Reverse Color Ramp", value = TRUE),
+        radioButtons("color_mode", "Color Scale Type:", choices = c("Discrete Bins", "Continuous"), selected = "Discrete Bins"),
+        checkboxInput("lim_val", "Apply Custom Color Limits (Hide OOB)", value = FALSE),
+        numericInput("min_val", "Color Min Value:", value = NA),
+        numericInput("max_val", "Color Max Value:", value = NA),
+        sliderInput("opacity", "Polygon Opacity:", min = 0, max = 1, value = 0.8, step = 0.1)
+      )
+    )
+  ),
+  
+  # Main page content
+  layout_columns(
+    col_widths = c(12),
+    card(
+      full_screen = TRUE,
+      card_header(
+        class = "d-flex justify-content-between align-items-center",
+        "WebGL Head Distribution Map",
+        tooltip(
+          icon("info-circle"),
+          "GPU-accelerated map. Displays millions of cells instantly."
+        )
+      ),
+      rdeckOutput("my_rdeck", height = "65vh")
+    ),
+    accordion(
+      open = "Temporal Hydrograph Plot",
+      accordion_panel(
+        "Temporal Hydrograph Plot",
+        icon = icon("chart-line"),
+        plotlyOutput("chart", height = "280px")
+      )
+    )
+  )
 )
 
 server <- function(input, output, session) {
-  output$page_content <- renderUI({
-    tagList(
-      titlePanel("RGW heads"),
-      sidebarLayout(
-        sidebarPanel(
-          # radioButtons("radio", label = "Input type",
-          #              choices = list("Single file" = 1,
-          #                             "Up to 3 files" = 2,
-          #                             "Upload file with addressess" = 3), 
-          #              selected = 1),
-          radioButtons("radio_time_unit", label = "time units",
-                       choiceNames = c("time","SP","date"),
-                       choiceValues	= c("time","SP","date"),
-                       selected = "time"),
-          # sliderInput("select_time", label = h3("Select time"), 
-          #             min = 1, 
-          #             max = 1, 
-          #             value = 1,
-          #             animate = T,
-          #             step =1),
-          numericInput("select_time", label = h3("Select time"), 
-                      min = 1, 
-                      max = 1, 
-                      value = 1,
-                                            step =1),
-          # sliderInput("select_layer", label = h3("Select layer"), 
-          #             min = 1, 
-          #             max = 7, 
-          #             value = 1),
-          numericInput("select_layer", label = h3("Select layer"), 
-                      min = 1, 
-                      max = 7, 
-                      value = 1),
-          checkboxInput("contour_if", label = "Contours?", value = F),
-          checkboxInput("lim_val", label = "limit values", value = F),
-          numericInput("max_val",
-                       label = "max_val:",
-                       value = 502),
-          numericInput("min_val",
-                       label = "min_val:",
-                       value = 489),
-          numericInput("int_val",
-                       label = "cont. interv.:",
-                       value = 0.5),
-          dateInput(inputId = "start_date",
-                    label = "start time",
-                    value = "2019-06-01",
-                    weekstart = 1),
-          fileInput("file1_ddn",
-                    label = "Head, dradown or concentration file"),
-          # fileInput("file2_shp",
-          #           label = "obs shp file"),
-          fileInput("file3_grd",
-                    label = "gridgen grid file(.gpkg)"),
-          numericInput("crs",
-                       label = "EPSG:",
-                       value = 28351),
-          numericInput("nodenumber",
-                       label = "node number:",
-                       value = 1)
-        ),
-        mainPanel(
-          #tableOutput("table2"),
-          #downloadButton("download_data", label = "Download Data")
-          leafletOutput("my_leaflet2"),
-          # absolutePanel(bottom = 10, left = 10,
-          #               verbatimTextOutput("clickInfo")),
-          plotlyOutput('chart'),
-          #dataTableOutput("table")
- 
-        )
-      )  
-    )})
   
-  #data inputs
+  # Value Boxes
+  output$status_text <- renderText({
+    hds_loaded <- !is.null(hds_path())
+    grd_loaded <- !is.null(grid_path())
+    if (hds_loaded && grd_loaded) {
+      "Active (Parquet)"
+    } else if (hds_loaded) {
+      "Heads Loaded, Waiting for Grid"
+    } else if (grd_loaded) {
+      "Grid Loaded, Waiting for Heads"
+    } else {
+      "Waiting for Uploads"
+    }
+  })
   
-  #grid
-  grid_shp_poly <- reactive({input$file3_grd$datapath}) 
-  #crs
-  crs1 <- reactive({as.numeric(input$crs)})
+  output$slice_text <- renderText({
+    paste("Layer ", input$select_layer, " / SP ", input$select_time, sep="")
+  })
   
-  #drd finename
-  fn <- reactive({input$file1_ddn$datapath}) 
-  L <- reactive({as.numeric(input$select_layer)}) 
-  i <- 1
+  output$node_text <- renderText({
+    req(input$nodenumber)
+    paste("Node #", input$nodenumber, sep="")
+  })
   
-  #data for contours
-  #stress period
-  SP <- reactive({as.numeric(input$select_time)})
+  # Status indicators
+  output$status_grd <- renderUI({
+    if (is.null(grid_path())) span(icon("times-circle"), " Grid missing", style="color:#ef4444")
+    else span(icon("check-circle"), " Grid loaded", style="color:#10b981")
+  })
+  output$status_hds <- renderUI({
+    if (is.null(hds_path())) span(icon("times-circle"), " Heads missing", style="color:#ef4444")
+    else span(icon("check-circle"), " Heads loaded", style="color:#10b981")
+  })
+  output$status_time <- renderUI({
+    if (is.null(time_path())) span(icon("times-circle"), " Times missing", style="color:#ef4444")
+    else span(icon("check-circle"), " Times loaded", style="color:#10b981")
+  })
   
-  #model layer
+  # Accumulate uploaded files so sequential drag-and-drops don't overwrite each other
+  uploaded_files <- reactiveVal(data.frame(name = character(), datapath = character(), stringsAsFactors = FALSE))
+  
+  observeEvent(input$upload_files, {
+    new_files <- input$upload_files
+    current_files <- uploaded_files()
+    
+    # Remove older files with the same name if re-uploaded
+    current_files <- current_files[!(current_files$name %in% new_files$name), ]
+    updated_files <- rbind(current_files, new_files[, c("name", "datapath")])
+    
+    uploaded_files(updated_files)
+  })
 
-  #desired resolution of raster
-  res_x <- 50 
+  # Determine which file is which
+  grid_path <- reactive({
+    req(nrow(uploaded_files()) > 0)
+    files <- uploaded_files()
+    idx <- grep("grid|qtgrid", files$name, ignore.case = TRUE)
+    if(length(idx) == 0) return(NULL)
+    files$datapath[idx[1]]
+  })
   
-  #data for hydrographs
-  node_sel_fn <- reactive({input$file2_shp$datapath}) 
-  bore_id_col <- "bore_id"
+  hds_path <- reactive({
+    req(nrow(uploaded_files()) > 0)
+    files <- uploaded_files()
+    idx_p <- grep("\\.parquet$", files$name, ignore.case = TRUE)
+    idx_g <- grep("grid|qtgrid", files$name, ignore.case = TRUE)
+    idx <- setdiff(idx_p, idx_g)
+    if(length(idx) == 0) return(NULL)
+    files$datapath[idx[1]]
+  })
   
-  #read in grid from shapefile generted with gridgen
-  grid_sf_grid <- reactive({
-    req(grid_shp_poly())
-    read_ugrid(grid_shp_poly(),crs1())
-    })
+  time_path <- reactive({
+    req(nrow(uploaded_files()) > 0)
+    files <- uploaded_files()
+    idx <- grep("\\.csv$", files$name, ignore.case = TRUE)
+    if(length(idx) == 0) return(NULL)
+    files$datapath[idx[1]]
+  })
+
+  # Grid GeoParquet Loading
+  grid_sf <- reactive({
+    req(grid_path())
+    st_read_parquet(grid_path())
+  })
   
-  grid_sf_grid_outline <- reactive({
-    grid_sf_grid()[[2]] %>% 
-      group_by() %>% 
-      summarise(nodenumber = max(nodenumber)) %>% 
+  # Outline for initial bounds
+  grid_outline <- reactive({
+    req(grid_sf())
+    grid_sf() %>% 
+      filter(layer == 1) %>% 
+      st_union() %>%
       st_transform(4326)
-      })
-
-  #read in drawdown binary file
+  })
+  
+  # Head Dataset & Times
+  head_ds <- reactive({
+    req(hds_path())
+    open_dataset(hds_path())
+  })
+  
   time_df <- reactive({
-    get_times_u_df_date(fn()[i],
-                        date_start = input$start_date)
-      })
+    req(time_path())
+    df <- read_csv(time_path(), show_col_types = FALSE)
+    df <- df %>% mutate(date = ymd(input$start_date) + days(time))
+    df
+  })
   
-  n_times <- reactive({
-    max(time_df()$n)})
+  # Step controls
+  observeEvent(input$prev_sp, {
+    req(input$select_time > 1)
+    updateSliderInput(session, "select_time", value = input$select_time - 1)
+  })
+  observeEvent(input$next_sp, {
+    req(time_df(), input$select_time < max(time_df()$SP))
+    updateSliderInput(session, "select_time", value = input$select_time + 1)
+  })
   
-  n_lay <- reactive({max(grid_sf_grid()[[1]]$layer)})
+  # Update UI Bounds dynamically
+  observe({
+    req(time_df())
+    updateSliderInput(session, "select_time", max = max(time_df()$SP))
+  })
   
-  #extract head from file
-  h_matr <- reactive({
-    req(fn()[i])
-    get_con_u(fn()[i])})
+  observe({
+    req(grid_sf())
+    updateNumericInput(session, "select_layer", max = max(grid_sf()$layer, na.rm = TRUE))
+  })
   
-  #check for file type - quadtree or octree
+  # Slicing the Heads for the Map
+  head_slice <- reactive({
+    req(head_ds(), input$select_time, input$select_layer)
+    sp_target <- as.integer(input$select_time)
+    lay_target <- as.integer(input$select_layer)
+    
+    # Push query down to Arrow / DuckDB
+    head_ds() %>%
+      filter(SP == sp_target, layer == lay_target) %>%
+      collect()
+  })
   
-  h_type <- reactive({
-    req(fn()[i])
-    if (typeof(h_matr()) == "double"){
-     "quadtree"
-     } else if (typeof(h_matr()) == "list"){
-       "octree"
+  # Join Slice with Geometry
+  map_data <- reactive({
+    req(grid_sf())
+    lay_target <- as.integer(input$select_layer)
+    
+    # Filter grid to correct layer
+    df <- grid_sf() %>% filter(layer == lay_target)
+    
+    # Try joining heads if available
+    try_heads <- tryCatch({
+      h_df <- head_slice()
+      if(nrow(h_df) > 0) h_df else NULL
+    }, error = function(e) NULL)
+    
+    if (!is.null(try_heads)) {
+      df <- df %>% inner_join(try_heads, by = c("layer", "nodenumberL1"))
+    }
+    
+    df <- df %>% st_transform(4326)
+    
+    if (!"h" %in% colnames(df)) {
+      df <- df %>% mutate(h = NA_real_, h_color = NA_real_)
+    } else {
+      # Exclude 999 if checked
+      if(isTRUE(input$exclude_999)) {
+        df <- df %>% mutate(h_color = ifelse(h == 999, NA, h))
+      } else {
+        df <- df %>% mutate(h_color = h)
       }
-    
-    
-  })
-
-   #trig_ras <- reactive({get_head_raster(grid_sf_pt_grid(),h_matr(),SP(),L,res_x,crs1())})
-  poly_map <- reactive({get_head_poly(grid_sf_grid(),
-                                      h_matr(),
-                                      SP(),
-                                      L(),
-                                      crs1())})
-  
-  
-  
-  head_map_poly <- reactive({poly_map()[[2]]  %>% 
-      st_transform(4326)})
-  
-  head_map_pt <- reactive({poly_map()[[1]]})
-  
-  head_ras <-  reactive({get_ras_f(head_map_pt(),100,500,crs1())
-    })
-
-   
-  head_con <- reactive({
-    
-    req(input$contour_if == T,
-        head_ras(),
-        input$min_val,
-        input$max_val,
-        input$int_val,
-        input$min_val <= input$max_val,
-        input$int_val <= input$max_val - input$min_val,
-        input$int_val > 0,
-        cancelOutput = T
-    )
-    
-    
-    from1 <- as.numeric(input$min_val)
-    to1 <- as.numeric(input$max_val)
-    by1 <- as.numeric(input$int_val)
-    
-    con_f(head_ras(), 
-          as.vector(seq(from = from1, 
-                        to = to1,
-                        by = by1)),  
-          28351)
-  })  
-  
-
-  
-  lf_map2 <- reactive({
-    
-    leaflet() %>% 
-      addTiles((urlTemplate = 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}') ) %>%
-      addMapPane(name = "outline", zIndex = 420) %>% 
-      addMapPane(name = "contours", zIndex = 420) %>% 
-      addMapPane(name = "grid_head_pane", zIndex = 420) %>% 
-      addPolygons(group = "outline",
-                  data=grid_sf_grid_outline(),
-                  opacity = 1,
-                  fillOpacity = 0,
-                  stroke = T,
-                  color = "red",
-                  options = leafletOptions(pane = "outline")) 
-
-  })
- 
-  domain_pal <- reactive({
-    if(input$lim_val == F){
-      head_map_poly()$h
-    }else{ c(input$min_val,input$max_val)}
-    
-  })
-  
-  
-  colorpal <- reactive({colorNumeric(
-    palette = "Spectral",
-    domain = domain_pal())})
-  
- # update a map 
-#contour map
-  observe({
-    req(head_con(),
-        cancelOutput = T
-        )
-    
-    
-
-    
-    proxy <- leafletProxy("my_leaflet2")
-    proxy %>%
-      clearGroup(group = "contours") %>%
-      addPolylines(group = "contours",
-                   data = head_con(),
-                   opacity = 0.5,
-                   fillOpacity = 0.5,
-                   stroke = T,
-                   options = leafletOptions(pane = "contours"))
-    
-    
-    
-    
-       })
-  #poly map
-  observe({
-    req(input$file1_ddn,
-        input$file3_grd)
-    pal <- colorpal()
-      proxy <- leafletProxy("my_leaflet2")
-      proxy %>%
-        clearGroup(group = "grid_head") %>%
-        addPolygons(group = "grid_head",
-                    data=head_map_poly(),
-                    opacity = 1,
-                    fillOpacity = 0.5,
-                    fillColor = ~pal(h),
-                    stroke = F,
-                    options = leafletOptions(pane = "grid_head_pane"),
-                    layerId = ~nodenumber,
-                    label = ~round(h,2))# %>%
-      #addLegend(layerId = "legend2",
-      #          title = "head/drawdown",
-      #          pal = pal,
-      #          values= vals )
-  })
-  
-  # observe({
-  #   req(input$file1_ddn)
-  #   pal <- colorpal()
-  #     proxy <- leafletProxy("my_leaflet2")
-  #     proxy %>%
-  #       clearGroup(group = "grid_head") %>%
-  #       clearGroup(group = "contours") %>%
-  #       addPolylines(group = "contours",
-  #                    data = head_con(),
-  #                    opacity = 0.5,
-  #                    fillOpacity = 0.5,
-  #                    stroke = T,
-  #                    options = leafletOptions(pane = "contours")) %>%
-  #       addPolygons(group = "grid_head",
-  #                   data=head_map_poly(),
-  #                   opacity = 1,
-  #                   fillOpacity = 0.5,
-  #                   fillColor = ~pal(h),
-  #                   stroke = F,
-  #                   options = leafletOptions(pane = "grid_head_pane"),
-  #                   layerId = ~nodenumber,
-  #                   label = ~round(h,2))# %>%
-  #     #addLegend(layerId = "legend2",
-  #     #          title = "head/drawdown",
-  #     #          pal = pal,
-  #     #          values= vals )
-  # })
-  
-     output$my_leaflet2 <- renderLeaflet(lf_map2())
-
-  observe({
-    #if(input$pump_in_type == "single point"){
       
-      click <- input$my_leaflet2_shape_click
-      req(click)
-      node_num <- as.numeric(str_extract(click$id,"[0-9]+"))
-      output$clickInfo <- renderPrint(click)
-   updateNumericInput(session,
-                      inputId = "nodenumber",
-                      label = "Easting:",
-                      value = node_num
-   )
-  })
-  
-  
-  observe( {
-    if(is.null(fn())){
-      return()
-      }else{
-        max = n_times()
-        updateSliderInput(session, "select_time", max=max)
+      # Exclude outside limits if checked
+      if(isTRUE(input$lim_val)) {
+        if(!is.na(input$min_val)) {
+          df <- df %>% mutate(h_color = ifelse(!is.na(h_color) & h_color < input$min_val, NA, h_color))
+        }
+        if(!is.na(input$max_val)) {
+          df <- df %>% mutate(h_color = ifelse(!is.na(h_color) & h_color > input$max_val, NA, h_color))
+        }
       }
-    
-  })
-  
-  
-  observe( {
-    if(is.null(node_sel_fn())){
-      return()
-    }else{
-      layer = n_lay()
-      updateSliderInput(session, "select_layer", max=layer)
     }
     
+    df
   })
   
-  
-  
-  #node_sel_sf <- reactive({st_read(node_sel_fn())})
-  node <- reactive({
-    as.numeric(input$nodenumber)
-    # click1 <- input$my_leaflet2_shape_click
-    # input$my_leaflet_shape_click
-    # if(is.null(click1))
-    # return()
-    # as.numeric(str_extract(click1$id,"[0-9]+"))
-    })
-
-  #n_nodes <- 127587
-  head_flat <- reactive({
-    req(fn()[i])
-    if (h_type() == "quadtree"){
-      flatten_head_quadtree(h_matr())
-    } else if (h_type() == "octree"){
-      flatten_head_octree(h_matr())
+  # Color scaling
+  domain_pal <- reactive({
+    req(head_slice())
+    vals <- head_slice()$h
+    if(isTRUE(input$exclude_999)) {
+      vals <- vals[vals != 999]
     }
-    })
-
-
-  df_sel_hydr <-  reactive({get_hydr(head_flat(),node(),node(),time_df())})
+    
+    c_min <- min(vals, na.rm=TRUE)
+    c_max <- max(vals, na.rm=TRUE)
+    
+    if (isTRUE(input$lim_val)) {
+      if (!is.na(input$min_val)) c_min <- input$min_val
+      if (!is.na(input$max_val)) c_max <- input$max_val
+    }
+    
+    c(c_min, c_max)
+  })
   
-  #output$table <- renderDataTable(df_sel_hydr())
-  #output$table2 <- renderTable(df_sel_hydr)
+  # WebGL Map Base
+  output$my_rdeck <- renderRdeck({
+    req(grid_outline())
+    bbox <- st_bbox(grid_outline())
+    
+    rdeck(
+      map_style = NULL, # Mapbox needs a token, so we skip it
+      initial_bounds = bbox,
+      controller = TRUE
+    )
+  })
   
+  # Dynamic Map Layer updates
+  observe({
+    req(map_data())
+    
+    has_heads <- !is.null(hds_path()) && "h" %in% colnames(map_data()) && !all(is.na(map_data()$h))
+    
+    if (has_heads) {
+      req(domain_pal())
+      my_breaks <- pretty(domain_pal(), n = 10)
+      my_palette <- if(isTRUE(input$rev_colors)) rev(viridisLite::turbo(length(my_breaks) + 1)) else viridisLite::turbo(length(my_breaks) + 1)
+      
+      fill_scale <- if (input$color_mode == "Discrete Bins") {
+        scale_color_threshold(
+          col = h_color,
+          palette = my_palette,
+          breaks = my_breaks,
+          na_color = "#00000000"
+        )
+      } else {
+        scale_color_linear(
+          col = h_color,
+          palette = my_palette,
+          limits = domain_pal(),
+          breaks = my_breaks,
+          na_color = "#00000000"
+        )
+      }
+      fill_color_arg <- fill_scale
+    } else {
+      fill_color_arg <- "#3b82f680" # default blue outline when no heads
+    }
+    
+    tooltip_vars <- if (has_heads) rlang::expr(c(nodenumber, h)) else rlang::expr(c(nodenumber))
+    
+    # Use rdeck's built-in scaling for GPU coloring
+    rdeck_proxy("my_rdeck") %>%
+      add_tile_layer(
+        id = "google_sat",
+        data = "https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}",
+        pickable = FALSE
+      ) %>%
+      add_polygon_layer(
+        id = "head_layer",
+        data = map_data(),
+        get_polygon = geom,
+        get_fill_color = !!fill_color_arg,
+        get_line_color = if(has_heads) "#00000000" else "#ffffff80",
+        opacity = input$opacity,
+        pickable = TRUE,
+        auto_highlight = TRUE,
+        highlight_color = "#ffffff80",
+        tooltip = !!tooltip_vars
+      )
+  })
   
-  char_head <- reactive({df_sel_hydr() %>% ggplot( aes(.data[[input$radio_time_unit]], value,col = name))+
-     geom_line()})#+
-  #expand_limits(y =0)+
-  #facet_grid( sim ~ bore )
-  #char_head
-  output$chart <- renderPlotly({ggplotly(char_head(),dynamicTicks =T)})
+  # Handle map clicks
+  observeEvent(input$my_rdeck_click, {
+    info <- input$my_rdeck_click
+    if (!is.null(info) && !is.null(info$object)) {
+      updateNumericInput(session, "nodenumber", value = info$object$nodenumber)
+    }
+  })
   
+  # Number of nodes per layer (cached)
+  nodes_per_layer <- reactive({
+    req(head_ds())
+    if (!is.null(grid_path())) {
+      # Fast fallback if grid is loaded
+      grid_sf() %>% filter(layer == 1) %>% nrow()
+    } else {
+      # Compute mathematically from parquet metadata
+      head_ds() %>% summarize(n = max(nodenumberL1)) %>% collect() %>% pull(n)
+    }
+  })
+  
+  # Hydrograph Data
+  node_hydr <- reactive({
+    req(head_ds(), input$nodenumber, time_df())
+    node_id <- as.integer(input$nodenumber)
+    n_layer <- nodes_per_layer()
+    
+    lay_target <- (node_id - 1) %/% n_layer + 1
+    nl1_target <- (node_id - 1) %% n_layer + 1
+    
+    # Query arrow dataset for this specific node across all time
+    h_time <- head_ds() %>%
+      filter(layer == lay_target, nodenumberL1 == nl1_target) %>%
+      collect()
+      
+    # Join with time dataframe
+    h_time %>%
+      left_join(time_df(), by = "SP")
+  })
+  
+  # Plotly Chart
+  output$chart <- renderPlotly({
+    req(node_hydr())
+    
+    time_col <- input$radio_time_unit
+    lbls <- c("time" = "Time (Days)", "SP" = "Stress Period", "date" = "Calendar Date")
+    
+    p <- ggplot(node_hydr(), aes(x = .data[[time_col]], y = h)) +
+      geom_line(linewidth = 1, color = "#10b981") +
+      geom_point(size = 2, color = "#10b981", alpha = 0.7) +
+      labs(
+        title = paste("Hydrograph for Node #", input$nodenumber),
+        x = lbls[time_col],
+        y = "Head / Drawdown"
+      ) +
+      theme_minimal(base_family = "Inter") +
+      theme(
+        plot.title = element_text(face = "bold", color = "white"),
+        axis.title = element_text(face = "bold", color = "white"),
+        axis.text = element_text(color = "gray"),
+        panel.grid.major = element_line(color = "#334155"),
+        panel.grid.minor = element_blank(),
+        plot.background = element_rect(fill = "#1e293b", color = NA),
+        panel.background = element_rect(fill = "#1e293b", color = NA)
+      )
+      
+    ggplotly(p, dynamicTicks = TRUE) %>%
+      layout(
+        plot_bgcolor = "#1e293b",
+        paper_bgcolor = "#1e293b",
+        font = list(color = "white")
+      )
+  })
 }
 
 shinyApp(ui = ui, server = server)

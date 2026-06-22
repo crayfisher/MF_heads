@@ -3,5 +3,10 @@
 .RData
 .Ruserdata
 .ddn
-.hds
-.gpkg
+*.hds
+*.gpkg
+*.parquet
+*.csv
+data/
+app_backup.R
+__pycache__/

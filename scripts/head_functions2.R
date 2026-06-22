@@ -153,7 +153,7 @@ flatten_head_QO <- function(head_obj){
 
 
 get_hydr <- function(head_comb0,node_list,ID_list,time_df){
-  df_hydr <- head_comb0[,node_list] %>% 
+  df_hydr <- head_comb0[,node_list, drop=FALSE] %>% 
     as_tibble()
   
   colnames(df_hydr) <- ID_list 

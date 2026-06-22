@@ -23,14 +23,33 @@ def get_lst_py(file):
   return(incrementaldf)
   
   
+def get_alldata_usg(hdobj):
+  nlay = hdobj.nlay
+  times = hdobj.get_times()
+  nSP = len(times)
+  
+  layer_data = []
+  for lay in range(nlay):
+    layer_data.append(hdobj.get_alldata(mflay=lay))
+      
+  shapes = [d.shape[1] for d in layer_data]
+  if len(set(shapes)) == 1:
+    return np.stack(layer_data, axis=1)
+  else:
+    arr = np.empty((nSP, nlay), dtype=object)
+    for sp in range(nSP):
+      for lay in range(nlay):
+        arr[sp, lay] = layer_data[lay][sp]
+    return arr
+
 def get_head(file,header = "HEADU"):
   hdobj = bf.HeadUFile(file,text = header)
-  usgheads = hdobj.get_alldata()
+  usgheads = get_alldata_usg(hdobj)
   return(usgheads)
   
 def get_drd(file,header = "DRAWDOWNU"):
   hdobj = bf.HeadUFile(file,text = header)
-  usgheads = hdobj.get_alldata()
+  usgheads = get_alldata_usg(hdobj)
   return(usgheads)  
 
 
@@ -71,7 +90,7 @@ def get_drd_times(file,header = "DRAWDOWNU"):
   
 def get_con_str(file):
   ucnobj= bf.UcnFile(file)
-  ucndata = ucnobj.get_alldata()
+  ucndata = get_alldata_usg(ucnobj)
   return(ucndata)
   
 def get_ucn_str_times(file):
@@ -88,7 +107,7 @@ def get_ucn_str_times(file):
   
 def get_con_u(file,header = "" ):
   hdobj = bf.HeadUFile(file,text = header)
-  usgheads = hdobj.get_alldata()
+  usgheads = get_alldata_usg(hdobj)
   return(usgheads)
   
 def get_times_u(file,header = ""):
