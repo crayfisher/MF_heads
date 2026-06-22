@@ -5,6 +5,7 @@ COPY --chown=$MAMBA_USER:$MAMBA_USER environment.yml /tmp/environment.yml
 
 # Install the environment directly into base to save space
 RUN micromamba install -y -n base -f /tmp/environment.yml && \
+    micromamba run -n base Rscript -e "install.packages('rdeck', repos='https://cloud.r-project.org')" && \
     micromamba clean --all --yes
 
 # Copy the application files
