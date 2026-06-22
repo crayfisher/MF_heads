@@ -1,0 +1,15 @@
+data/
+.git
+.gitignore
+.Rproj.user
+.Rhistory
+.RData
+.Ruserdata
+*.Rproj
+app_backup.R
+scripts/
+__pycache__/
+*.hds
+*.gpkg
+*.parquet
+*.csv
