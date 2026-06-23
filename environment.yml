@@ -2,6 +2,8 @@ name: rgw_shiny
 channels:
   - conda-forge
 dependencies:
+  - c-compiler
+  - cxx-compiler
   - r-base
   - r-shiny
   - r-bslib
@@ -18,3 +20,4 @@ dependencies:
   - r-tidyverse
   - r-lubridate
   - r-sfarrow
+  - r-remotes
