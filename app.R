@@ -450,10 +450,11 @@ server <- function(input, output, session) {
     req(time_path())
     df <- read_csv(time_path(), show_col_types = FALSE)
     # `time` is cumulative model time in the model's own units; convert to days
-    # for the calendar axis (ddays accepts fractional days).
-    df <- df %>% mutate(date = as.POSIXct(input$start_date) +
-                          lubridate::ddays(time_to_days(time, model_time_units())))
-    df
+    # for the calendar axis (ddays accepts fractional days). Guard the start date
+    # (input may be NULL/blank during init -> as.POSIXct would error).
+    start <- tryCatch(as.POSIXct(as.character(input$start_date)), error = function(e) NA)
+    if (length(start) == 0 || is.na(start)) start <- as.POSIXct("1970-01-01")
+    df %>% mutate(date = start + lubridate::ddays(time_to_days(time, model_time_units())))
   })
   
   # Step controls
@@ -588,7 +589,13 @@ server <- function(input, output, session) {
     req(map_data(), domain_pal(), input$render_style %in% c("Contours", "Both"))
     df <- map_data() %>% filter(!is.na(h_color))
     req(nrow(df) > 0)
-    
+
+    # Cap the points fed to interp() so contours on huge grids (e.g. 49k cells)
+    # can't hang the app - sample down for the interpolation only.
+    if (nrow(df) > 40000) {
+      df <- df %>% slice_sample(n = 40000)
+    }
+
     my_breaks <- pretty(domain_pal(), n = 10)
     
     tryCatch({
@@ -655,8 +662,17 @@ server <- function(input, output, session) {
   # Dynamic Map Layer updates
   observe({
     req(map_data())
-    
-    has_heads <- !is.null(hds_path()) && "h" %in% colnames(map_data()) && !all(is.na(map_data()$h))
+
+    md <- map_data()
+    n_poly <- nrow(md)
+    # Large grids (e.g. 49k+ cells/layer): drop the hover-highlight, which forces
+    # deck.gl to re-render the whole picking layer on every pointer move and can
+    # exhaust GPU memory / hang the browser. Also ship only the columns rdeck
+    # needs to cut the per-update payload.
+    big_grid <- n_poly > 20000
+    render_df <- md %>% select(any_of(c("nodenumber", "nodenumberL1", "row", "col", "h", "h_color")))
+
+    has_heads <- !is.null(hds_path()) && "h" %in% colnames(md) && !all(is.na(md$h))
     
     if (has_heads) {
       req(domain_pal())
@@ -685,7 +701,7 @@ server <- function(input, output, session) {
     }
     
     # Show row/col when the grid carries them (structured models), else node id.
-    tt <- if (all(c("row", "col") %in% names(map_data()))) c("row", "col", "nodenumber") else "nodenumber"
+    tt <- if (all(c("row", "col") %in% names(render_df))) c("row", "col", "nodenumber") else "nodenumber"
     if (has_heads) tt <- c(tt, "h")
     tooltip_vars <- rlang::expr(c(!!!rlang::syms(tt)))
     
@@ -700,18 +716,18 @@ server <- function(input, output, session) {
     if (input$render_style %in% c("Color Flood", "Both") || !has_heads) {
       proxy <- proxy %>% add_polygon_layer(
         id = "head_layer",
-        data = map_data(),
+        data = render_df,
         get_polygon = geometry,
         get_fill_color = !!fill_color_arg,
         get_line_color = if(has_heads && input$render_style == "Color Flood") "#00000000" else "#ffffff80",
         opacity = input$opacity,
         pickable = TRUE,
-        auto_highlight = TRUE,
+        auto_highlight = !big_grid,
         highlight_color = "#ffffff80",
         tooltip = !!tooltip_vars
       )
     } else {
-      proxy <- proxy %>% add_polygon_layer(id = "head_layer", data = map_data() %>% slice(0), get_polygon = geometry)
+      proxy <- proxy %>% add_polygon_layer(id = "head_layer", data = render_df %>% slice(0), get_polygon = geometry)
     }
     
     if (input$render_style %in% c("Contours", "Both") && has_heads) {
