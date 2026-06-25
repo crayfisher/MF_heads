@@ -12,6 +12,12 @@ library(stars)
 library(interp)
 library(isoband)
 library(shinymanager)
+library(future)
+library(promises)
+# Run model processing in a background worker so the Shiny session stays
+# responsive (heavy USG/MF2005 extraction was blocking the event loop long
+# enough for the browser websocket to time out and grey the app out).
+future::plan(future::multisession, workers = 2)
 # Limit upload file size to 1000MB
 options(shiny.maxRequestSize = 1000 * 1024^2)
 
@@ -308,79 +314,83 @@ server <- function(input, output, session) {
     uploaded_files(updated_files)
   })
   
+  # Apply the processed model's output dir + metadata to the session. Runs on the
+  # main thread once the background job resolves.
+  apply_processed_model <- function(out_dir) {
+    out_files <- list.files(out_dir, full.names = TRUE)
+    if (length(out_files) == 0) {
+      removeModal()
+      showNotification("Failed to extract any useful data from ZIP.", type = "error")
+      return(invisible())
+    }
+    uploaded_files(data.frame(name = basename(out_files), datapath = out_files,
+                              stringsAsFactors = FALSE))
+
+    read_meta <- function(fname) {
+      f <- file.path(out_dir, fname)
+      if (file.exists(f)) trimws(readLines(f, warn = FALSE)[1]) else ""
+    }
+    cu <- read_meta("crs_used.txt")
+    known <- nzchar(cu) && toupper(cu) != "NONE"
+    model_crs(if (known) cu else "NONE")
+    updateCheckboxInput(session, "show_basemap", value = known)
+
+    sent <- read_meta("sentinels.txt")
+    sv <- suppressWarnings(as.numeric(strsplit(sent, ",")[[1]]))
+    model_sentinels(unique(c(999, sv[is.finite(sv)])))
+
+    tu <- read_meta("time_units.txt")
+    model_time_units(if (nzchar(tu)) tu else "unknown")
+    sd <- read_meta("start_date.txt")
+    # as.Date() errors (not warns) on non-dates like "NONE", so guard it.
+    sd_date <- if (nzchar(sd) && toupper(sd) != "NONE")
+      tryCatch(as.Date(substr(sd, 1, 10)), error = function(e) NA) else NA
+    if (!is.na(sd_date)) {
+      updateDateInput(session, "start_date", value = sd_date)
+    }
+
+    removeModal()
+    showNotification(paste0("Model successfully extracted and processed!",
+                            if (known) sprintf(" CRS EPSG:%s.", cu) else " No CRS - basemap hidden."),
+                     type = "message")
+  }
+
   observeEvent(input$upload_zip, {
     req(input$upload_zip)
-    
+
     showModal(modalDialog(
       title = "Processing Archive...",
-      "Extracting and compiling model files. This may take a minute...",
+      "Extracting and compiling model files. Large models can take a minute or two - the app stays connected while this runs.",
       footer = NULL
     ))
-    
+
+    # Capture plain values for the background worker (no reactives inside future).
     zip_path <- input$upload_zip$datapath
     temp_dir <- tempfile(pattern = "model_extract_")
     out_dir <- tempfile(pattern = "model_out_")
-    
     dir.create(temp_dir)
-    unzip(zip_path, exdir = temp_dir)
-    
     mtype <- input$model_type
-    
-    # Use absolute path so it works regardless of working directory
     process_script <- file.path(APP_DIR, "scripts", "process_model.R")
-    cmd <- sprintf("conda run -n flopy_env Rscript %s %s %s %s",
-                   shQuote(process_script), mtype, shQuote(temp_dir), shQuote(out_dir))
-    message("[ZIP Upload] Running: ", cmd)
-    res <- system(cmd, intern = FALSE, ignore.stdout = FALSE, ignore.stderr = FALSE)
-    message("[ZIP Upload] Exit code: ", res)
-    
-    # Gather output files and REPLACE all previously uploaded files
-    out_files <- list.files(out_dir, full.names = TRUE)
-    if(res == 0 && length(out_files) > 0) {
-      new_files <- data.frame(
-        name = basename(out_files),
-        datapath = out_files,
-        stringsAsFactors = FALSE
-      )
-      
-      # Clear all previous files - new ZIP is a fresh model
-      uploaded_files(new_files)
 
-      # Read reference metadata the parser/R wrote out.
-      read_meta <- function(fname) {
-        f <- file.path(out_dir, fname)
-        if (file.exists(f)) trimws(readLines(f, warn = FALSE)[1]) else ""
+    # Heavy work (unzip + conda Rscript extraction) runs in a worker process so
+    # the Shiny event loop keeps answering heartbeats and never disconnects.
+    future_promise({
+      unzip(zip_path, exdir = temp_dir)
+      cmd <- sprintf("conda run -n flopy_env Rscript %s %s %s %s",
+                     shQuote(process_script), mtype, shQuote(temp_dir), shQuote(out_dir))
+      res <- system(cmd, intern = FALSE, ignore.stdout = TRUE, ignore.stderr = TRUE)
+      list(res = res, out_dir = out_dir)
+    }, seed = TRUE) %...>% (function(result) {
+      if (result$res == 0) {
+        apply_processed_model(result$out_dir)
+      } else {
+        removeModal()
+        showNotification("Model processing failed (non-zero exit).", type = "error")
       }
-
-      # CRS: default the basemap toggle from whether a CRS was resolved. A model
-      # with no known CRS lands at a fabricated location, so hide the basemap.
-      cu <- read_meta("crs_used.txt")
-      known <- nzchar(cu) && toupper(cu) != "NONE"
-      model_crs(if (known) cu else "NONE")
-      updateCheckboxInput(session, "show_basemap", value = known)
-
-      # Model-specific inactive/dry head sentinels (HNOFLO/HDRY).
-      sent <- read_meta("sentinels.txt")
-      sv <- suppressWarnings(as.numeric(strsplit(sent, ",")[[1]]))
-      sv <- sv[is.finite(sv)]
-      model_sentinels(unique(c(999, sv)))
-
-      # Time units (for the calendar axis) + start date from the model.
-      tu <- read_meta("time_units.txt")
-      model_time_units(if (nzchar(tu)) tu else "unknown")
-      sd <- read_meta("start_date.txt")
-      sd_date <- suppressWarnings(as.Date(substr(sd, 1, 10)))
-      if (nzchar(sd) && toupper(sd) != "NONE" && !is.na(sd_date)) {
-        updateDateInput(session, "start_date", value = sd_date)
-      }
-
-      crs_msg <- if (known) sprintf(" CRS EPSG:%s.", cu) else " No CRS - basemap hidden."
+    }) %...!% (function(err) {
       removeModal()
-      showNotification(paste0("Model successfully extracted and processed!", crs_msg), type = "message")
-    } else {
-      removeModal()
-      showNotification("Failed to extract any useful data from ZIP.", type = "error")
-    }
+      showNotification(paste("Processing error:", conditionMessage(err)), type = "error")
+    })
   })
 
   # Determine which file is which
