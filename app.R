@@ -15,6 +15,14 @@ library(shinymanager)
 # Limit upload file size to 1000MB
 options(shiny.maxRequestSize = 1000 * 1024^2)
 
+# Resolve app directory at load time (before Shiny changes cwd)
+APP_DIR <- normalizePath(dirname(sys.frame(1)$ofile %||% "."), mustWork = FALSE)
+if (!file.exists(file.path(APP_DIR, "scripts", "process_model.R"))) {
+  # Fallback: use getwd() which is set to app dir by runApp()
+  APP_DIR <- getwd()
+}
+message("[Startup] APP_DIR = ", APP_DIR)
+
 # Define custom premium theme using bslib
 app_theme <- bs_theme(
   bootswatch = "darkly",
@@ -58,7 +66,7 @@ credentials <- data.frame(
   stringsAsFactors = FALSE
 )
 
-ui <- secure_app(page_sidebar(
+ui <- page_sidebar(
   title = "RGW Heads Visualizer (WebGL)",
   theme = app_theme,
   header = tags$head(
@@ -78,7 +86,18 @@ ui <- secure_app(page_sidebar(
       accordion_panel(
         "1. Data Uploads",
         icon = icon("cloud-upload-alt"),
-        fileInput("upload_files", "Drop all files here (Grid .parquet, Heads .parquet, Times .csv)", 
+        selectInput("model_type", "Model Type:",
+                    choices = c("MF-USG" = "usg", "MF6" = "mf6", "MODFLOW-2005" = "mf2005")),
+        div(style = "display: flex; align-items: center; gap: 10px;",
+            fileInput("upload_zip", "Upload Model ZIP", accept = ".zip"),
+            tooltip(
+              icon("question-circle"),
+              uiOutput("zip_help")
+            )
+        ),
+        uiOutput("georef_help"),
+        hr(style = "border-top: 1px solid #334155; margin: 10px 0;"),
+        fileInput("upload_files", "Or Manual Parquet Upload (Grid, Heads, Times)",
                   accept = c(".parquet", ".csv"), multiple = TRUE, buttonLabel = "Browse..."),
         fileInput("upload_baseline", "Optional: Upload Baseline Heads (.parquet) for Drawdown", accept = c(".parquet"), multiple = FALSE, buttonLabel = "Browse...")
       ),
@@ -95,7 +114,10 @@ ui <- secure_app(page_sidebar(
       accordion_panel(
         "3. Projection & Timeline",
         icon = icon("calendar-alt"),
-        dateInput("start_date", "Model Start Date:", value = "2019-06-01", weekstart = 1)
+        uiOutput("crs_status"),
+        dateInput("start_date", "Model Start Date:", value = "2019-06-01", weekstart = 1),
+        div(style = "font-size: 0.78rem; color: #94a3b8; margin-top: 4px;",
+            "Start date auto-fills from the model's reference info when available; adjust freely.")
       ),
       accordion_panel(
         "4. Slicing & Extraction",
@@ -118,7 +140,8 @@ ui <- secure_app(page_sidebar(
         icon = icon("palette"),
         radioButtons("data_display", "Display Variable:", choices = c("Heads", "Drawdown"), selected = "Heads", inline = TRUE),
         radioButtons("render_style", "Map Style:", choices = c("Color Flood", "Contours", "Both"), selected = "Color Flood", inline = TRUE),
-        checkboxInput("exclude_999", "Exclude Inactive Cells (h=999)", value = TRUE),
+        checkboxInput("show_basemap", "Show Satellite Basemap", value = TRUE),
+        checkboxInput("exclude_999", "Exclude Inactive/Dry Cells (999 or 1e30)", value = TRUE),
         checkboxInput("rev_colors", "Reverse Color Ramp", value = TRUE),
         radioButtons("color_mode", "Color Scale Type:", choices = c("Discrete Bins", "Continuous"), selected = "Discrete Bins"),
         checkboxInput("lim_val", "Apply Custom Color Limits (Hide OOB)", value = FALSE),
@@ -137,9 +160,13 @@ ui <- secure_app(page_sidebar(
       card_header(
         class = "d-flex justify-content-between align-items-center",
         "WebGL Head Distribution Map",
-        tooltip(
-          icon("info-circle"),
-          "GPU-accelerated map. Displays millions of cells instantly."
+        div(class = "d-flex align-items-center", style = "gap: 10px;",
+          actionButton("focus_model", "Focus on Model", icon = icon("crosshairs"),
+                       class = "btn-secondary btn-sm"),
+          tooltip(
+            icon("info-circle"),
+            "GPU-accelerated map. Displays millions of cells instantly."
+          )
         )
       ),
       rdeckOutput("my_rdeck", height = "65vh")
@@ -153,13 +180,37 @@ ui <- secure_app(page_sidebar(
       )
     )
   )
-))
+)
 
 server <- function(input, output, session) {
-  
-  res_auth <- secure_server(
-    check_credentials = check_credentials(credentials)
-  )
+
+  # res_auth <- secure_server(
+  #   check_credentials = check_credentials(credentials)
+  # )
+
+  # Inactive / dry / no-flow cells. Sentinels vary by model: USG often uses 999,
+  # MF6 writes +/-1e30, and MODFLOW-2005 HNOFLO/HDRY can be anything (e.g. 99999).
+  # The parser records the model's actual sentinels; we always also treat 999 and
+  # extreme magnitudes (>=1e29) as inactive.
+  model_sentinels <- reactiveVal(999)
+  is_inactive <- function(x) {
+    s <- model_sentinels()
+    !is.na(x) & (x %in% s | abs(x) >= 1e29)
+  }
+
+  # Reference info resolved from the last processed model.
+  model_crs <- reactiveVal("NONE")          # EPSG string or "NONE"
+  model_time_units <- reactiveVal("unknown")  # days / seconds / ...
+
+  # Convert model time (in its own units) to days for the calendar axis.
+  time_to_days <- function(t, units) {
+    switch(tolower(units %||% "unknown"),
+           "seconds" = t / 86400,
+           "minutes" = t / 1440,
+           "hours"   = t / 24,
+           "years"   = t * 365.25,
+           t)  # days or unknown -> assume days
+  }
   
   # Value Boxes
   output$status_text <- renderText({
@@ -184,7 +235,47 @@ server <- function(input, output, session) {
     req(input$nodenumber)
     paste("Node #", input$nodenumber, sep="")
   })
-  
+
+  # ZIP tooltip: required contents per model type.
+  output$zip_help <- renderUI({
+    common <- "Heads (.hds) must be inside the ZIP."
+    body <- switch(input$model_type %||% "mf6",
+      "usg"    = "MF-USG: ZIP must contain the heads (.hds) plus a grid polygon file (.gpkg or .shp from gridgen). The .gpkg should carry global node numbers and a layer field.",
+      "mf6"    = "MF6: ZIP must contain the full simulation (mfsim.nam + dis/disv/disu + .hds). Geometry is read directly from the model.",
+      "mf2005" = "MODFLOW-2005: ZIP must contain the name file (.nam), DIS package + referenced arrays, and heads (.hds). CRS/start date are read from the nam header.",
+      common)
+    span(body)
+  })
+
+  # Georeferencing instructions + example sidecar, shown under the ZIP input.
+  output$georef_help <- renderUI({
+    if ((input$model_type %||% "mf6") == "mf2005") {
+      div(style = "font-size: 0.78rem; color: #94a3b8; background:#0f172a; padding:8px; border-radius:6px; border:1px solid #334155;",
+          strong("Georeferencing: "), "read automatically from the flopy nam-file header ",
+          tags$code("#xll:..; yll:..; rotation:..; proj4_str:epsg:XXXX; start_datetime:.."),
+          ". No CRS → unreferenced view (no basemap).")
+    } else {
+      div(style = "font-size: 0.78rem; color: #94a3b8; background:#0f172a; padding:8px; border-radius:6px; border:1px solid #334155;",
+          strong("Georeferencing (optional): "),
+          "include a ", tags$code("usgs.model.reference"), " file in the ZIP to place the model on the map. Example:",
+          tags$pre(style = "margin:6px 0 0; white-space:pre; color:#cbd5e1;",
+                   "xll 1891460.0\nyll 5594400.0\nrotation 0.0\nepsg 2193\nstart_date 1980-07-01"),
+          "Without it the model is shown unreferenced (no basemap).")
+    }
+  })
+
+  # Resolved CRS line in the Projection panel.
+  output$crs_status <- renderUI({
+    cu <- model_crs()
+    if (is.null(cu) || toupper(cu) == "NONE") {
+      div(style = "font-size: 0.82rem; color:#f59e0b; margin-bottom:6px;",
+          icon("triangle-exclamation"), " Unreferenced (no CRS) – basemap off.")
+    } else {
+      div(style = "font-size: 0.82rem; color:#10b981; margin-bottom:6px;",
+          icon("location-dot"), sprintf(" Georeferenced: EPSG:%s.", cu))
+    }
+  })
+
   # Status indicators
   output$status_grd <- renderUI({
     if (is.null(grid_path())) span(icon("times-circle"), " Grid missing", style="color:#ef4444")
@@ -216,12 +307,89 @@ server <- function(input, output, session) {
     
     uploaded_files(updated_files)
   })
+  
+  observeEvent(input$upload_zip, {
+    req(input$upload_zip)
+    
+    showModal(modalDialog(
+      title = "Processing Archive...",
+      "Extracting and compiling model files. This may take a minute...",
+      footer = NULL
+    ))
+    
+    zip_path <- input$upload_zip$datapath
+    temp_dir <- tempfile(pattern = "model_extract_")
+    out_dir <- tempfile(pattern = "model_out_")
+    
+    dir.create(temp_dir)
+    unzip(zip_path, exdir = temp_dir)
+    
+    mtype <- input$model_type
+    
+    # Use absolute path so it works regardless of working directory
+    process_script <- file.path(APP_DIR, "scripts", "process_model.R")
+    cmd <- sprintf("conda run -n flopy_env Rscript %s %s %s %s",
+                   shQuote(process_script), mtype, shQuote(temp_dir), shQuote(out_dir))
+    message("[ZIP Upload] Running: ", cmd)
+    res <- system(cmd, intern = FALSE, ignore.stdout = FALSE, ignore.stderr = FALSE)
+    message("[ZIP Upload] Exit code: ", res)
+    
+    # Gather output files and REPLACE all previously uploaded files
+    out_files <- list.files(out_dir, full.names = TRUE)
+    if(res == 0 && length(out_files) > 0) {
+      new_files <- data.frame(
+        name = basename(out_files),
+        datapath = out_files,
+        stringsAsFactors = FALSE
+      )
+      
+      # Clear all previous files - new ZIP is a fresh model
+      uploaded_files(new_files)
+
+      # Read reference metadata the parser/R wrote out.
+      read_meta <- function(fname) {
+        f <- file.path(out_dir, fname)
+        if (file.exists(f)) trimws(readLines(f, warn = FALSE)[1]) else ""
+      }
+
+      # CRS: default the basemap toggle from whether a CRS was resolved. A model
+      # with no known CRS lands at a fabricated location, so hide the basemap.
+      cu <- read_meta("crs_used.txt")
+      known <- nzchar(cu) && toupper(cu) != "NONE"
+      model_crs(if (known) cu else "NONE")
+      updateCheckboxInput(session, "show_basemap", value = known)
+
+      # Model-specific inactive/dry head sentinels (HNOFLO/HDRY).
+      sent <- read_meta("sentinels.txt")
+      sv <- suppressWarnings(as.numeric(strsplit(sent, ",")[[1]]))
+      sv <- sv[is.finite(sv)]
+      model_sentinels(unique(c(999, sv)))
+
+      # Time units (for the calendar axis) + start date from the model.
+      tu <- read_meta("time_units.txt")
+      model_time_units(if (nzchar(tu)) tu else "unknown")
+      sd <- read_meta("start_date.txt")
+      sd_date <- suppressWarnings(as.Date(substr(sd, 1, 10)))
+      if (nzchar(sd) && toupper(sd) != "NONE" && !is.na(sd_date)) {
+        updateDateInput(session, "start_date", value = sd_date)
+      }
+
+      crs_msg <- if (known) sprintf(" CRS EPSG:%s.", cu) else " No CRS - basemap hidden."
+      removeModal()
+      showNotification(paste0("Model successfully extracted and processed!", crs_msg), type = "message")
+    } else {
+      removeModal()
+      showNotification("Failed to extract any useful data from ZIP.", type = "error")
+    }
+  })
 
   # Determine which file is which
   grid_path <- reactive({
     req(nrow(uploaded_files()) > 0)
     files <- uploaded_files()
-    idx <- grep("grid|qtgrid", files$name, ignore.case = TRUE)
+    # Require a parquet/gpkg extension so the intermediate grid_polys.csv that
+    # the parser leaves behind is never mistaken for the grid geometry.
+    idx <- grep("(grid|qtgrid).*\\.(parquet|gpkg)$", files$name, ignore.case = TRUE)
     if(length(idx) == 0) return(NULL)
     files$datapath[idx[1]]
   })
@@ -244,22 +412,30 @@ server <- function(input, output, session) {
   time_path <- reactive({
     req(nrow(uploaded_files()) > 0)
     files <- uploaded_files()
-    idx <- grep("\\.csv$", files$name, ignore.case = TRUE)
+    idx <- grep("Times\\.csv$", files$name, ignore.case = TRUE)
     if(length(idx) == 0) return(NULL)
     files$datapath[idx[1]]
   })
 
-  # Grid GeoParquet Loading
+  # Grid GeoParquet Loading. Standardize the geometry column name to "geometry"
+  # so rdeck's get_polygon = geometry works (older parquets use "geom").
   grid_sf <- reactive({
     req(grid_path())
-    st_read_parquet(grid_path())
+    g <- st_read_parquet(grid_path())
+    if (!identical(attr(g, "sf_column"), "geometry")) {
+      g <- st_sf(st_drop_geometry(g), geometry = st_geometry(g))
+    }
+    g
   })
   
   # Outline for initial bounds
   grid_outline <- reactive({
     req(grid_sf())
-    grid_sf() %>% 
-      filter(layer == 1) %>% 
+    df <- grid_sf()
+    if ("layer" %in% names(df)) {
+      df <- df %>% filter(layer == 1)
+    }
+    df %>% 
       st_union() %>%
       st_transform(4326)
   })
@@ -273,7 +449,10 @@ server <- function(input, output, session) {
   time_df <- reactive({
     req(time_path())
     df <- read_csv(time_path(), show_col_types = FALSE)
-    df <- df %>% mutate(date = ymd(input$start_date) + days(time))
+    # `time` is cumulative model time in the model's own units; convert to days
+    # for the calendar axis (ddays accepts fractional days).
+    df <- df %>% mutate(date = as.POSIXct(input$start_date) +
+                          lubridate::ddays(time_to_days(time, model_time_units())))
     df
   })
   
@@ -294,8 +473,14 @@ server <- function(input, output, session) {
   })
   
   observe({
-    req(grid_sf())
-    updateNumericInput(session, "select_layer", max = max(grid_sf()$layer, na.rm = TRUE))
+    req(head_ds())
+    # Layer count comes from the heads (grid geometry may be a single reusable
+    # layer for structured/DISV), so this works for every grid type.
+    n_lay <- tryCatch(
+      head_ds() %>% summarize(n = max(layer)) %>% collect() %>% pull(n),
+      error = function(e) 1
+    )
+    updateNumericInput(session, "select_layer", max = n_lay)
   })
   
   # Slicing the Heads for the Map
@@ -315,8 +500,8 @@ server <- function(input, output, session) {
         collect()
       if(nrow(h2_df) > 0) {
         h_df <- h_df %>% inner_join(h2_df %>% rename(h_base = h), by = c("layer", "nodenumberL1", "SP"))
-        # Drawdown = Baseline - Scenario
-        h_df$h <- ifelse(h_df$h == 999 | h_df$h_base == 999, 999, h_df$h_base - h_df$h)
+        # Drawdown = Baseline - Scenario (keep inactive cells flagged as 999)
+        h_df$h <- ifelse(is_inactive(h_df$h) | is_inactive(h_df$h_base), 999, h_df$h_base - h_df$h)
       }
     }
     
@@ -329,7 +514,19 @@ server <- function(input, output, session) {
     lay_target <- as.integer(input$select_layer)
     
     # Filter grid to correct layer
-    df <- grid_sf() %>% filter(layer == lay_target)
+    if ("layer" %in% names(grid_sf())) {
+      df <- grid_sf() %>% filter(layer == lay_target) %>% select(-layer)
+    } else {
+      df <- grid_sf()
+    }
+    
+    if (!"nodenumberL1" %in% names(df)) {
+      if ("nodenumber" %in% names(df)) {
+        df$nodenumberL1 <- df$nodenumber
+      } else {
+        df$nodenumberL1 <- 1:nrow(df)
+      }
+    }
     
     # Try joining heads if available
     try_heads <- tryCatch({
@@ -338,7 +535,7 @@ server <- function(input, output, session) {
     }, error = function(e) NULL)
     
     if (!is.null(try_heads)) {
-      df <- df %>% inner_join(try_heads, by = c("layer", "nodenumberL1"))
+      df <- df %>% inner_join(try_heads, by = "nodenumberL1")
     }
     
     df <- df %>% st_transform(4326)
@@ -346,9 +543,9 @@ server <- function(input, output, session) {
     if (!"h" %in% colnames(df)) {
       df <- df %>% mutate(h = NA_real_, h_color = NA_real_)
     } else {
-      # Exclude 999 if checked
+      # Exclude inactive/dry cells if checked
       if(isTRUE(input$exclude_999)) {
-        df <- df %>% mutate(h_color = ifelse(h == 999, NA, h))
+        df <- df %>% mutate(h_color = ifelse(is_inactive(h), NA, h))
       } else {
         df <- df %>% mutate(h_color = h)
       }
@@ -371,10 +568,10 @@ server <- function(input, output, session) {
   domain_pal <- reactive({
     req(head_slice())
     vals <- head_slice()$h
-    if(isTRUE(input$exclude_999)) {
-      vals <- vals[vals != 999]
-    }
-    
+    # Inactive/dry sentinels (999, 99999, +/-1e30, ...) must never drive the
+    # color scale, regardless of the "exclude" toggle (they are not real data).
+    vals <- vals[!is_inactive(vals)]
+
     c_min <- min(vals, na.rm=TRUE)
     c_max <- max(vals, na.rm=TRUE)
     
@@ -438,6 +635,16 @@ server <- function(input, output, session) {
     req(grid_outline())
     bbox <- st_bbox(grid_outline())
     
+    # Pad bbox if it's too small (prevents rdeck crash on tiny grids like 2-cell model)
+    if ((bbox["xmax"] - bbox["xmin"]) < 1e-4) {
+      bbox["xmax"] <- bbox["xmax"] + 1e-4
+      bbox["xmin"] <- bbox["xmin"] - 1e-4
+    }
+    if ((bbox["ymax"] - bbox["ymin"]) < 1e-4) {
+      bbox["ymax"] <- bbox["ymax"] + 1e-4
+      bbox["ymin"] <- bbox["ymin"] - 1e-4
+    }
+    
     rdeck(
       map_style = NULL, # Mapbox needs a token, so we skip it
       initial_bounds = bbox,
@@ -477,12 +684,16 @@ server <- function(input, output, session) {
       fill_color_arg <- "#3b82f680" # default blue outline when no heads
     }
     
-    tooltip_vars <- if (has_heads) rlang::expr(c(nodenumber, h)) else rlang::expr(c(nodenumber))
+    # Show row/col when the grid carries them (structured models), else node id.
+    tt <- if (all(c("row", "col") %in% names(map_data()))) c("row", "col", "nodenumber") else "nodenumber"
+    if (has_heads) tt <- c(tt, "h")
+    tooltip_vars <- rlang::expr(c(!!!rlang::syms(tt)))
     
     proxy <- rdeck_proxy("my_rdeck") %>%
       add_tile_layer(
         id = "google_sat",
         data = "https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}",
+        visible = isTRUE(input$show_basemap),
         pickable = FALSE
       )
       
@@ -490,7 +701,7 @@ server <- function(input, output, session) {
       proxy <- proxy %>% add_polygon_layer(
         id = "head_layer",
         data = map_data(),
-        get_polygon = geom,
+        get_polygon = geometry,
         get_fill_color = !!fill_color_arg,
         get_line_color = if(has_heads && input$render_style == "Color Flood") "#00000000" else "#ffffff80",
         opacity = input$opacity,
@@ -500,44 +711,67 @@ server <- function(input, output, session) {
         tooltip = !!tooltip_vars
       )
     } else {
-      proxy <- proxy %>% add_polygon_layer(id = "head_layer", data = map_data() %>% slice(0), get_polygon = geom)
+      proxy <- proxy %>% add_polygon_layer(id = "head_layer", data = map_data() %>% slice(0), get_polygon = geometry)
     }
     
     if (input$render_style %in% c("Contours", "Both") && has_heads) {
       cl_data <- contour_data()
-      cl <- cl_data$lines
-      cl_pts <- cl_data$labels
       
-      if (!is.null(cl) && nrow(cl) > 0) {
-        proxy <- proxy %>% add_path_layer(
-          id = "contour_layer",
-          data = cl,
-          get_path = geometry,
-          get_color = "#ffffff",
-          width_min_pixels = 2,
-          pickable = TRUE,
-          tooltip = c(h_color)
-        ) %>% add_text_layer(
-          id = "contour_labels",
-          data = cl_pts,
-          get_position = geometry,
-          get_text = label,
-          get_color = "#ffffff",
-          get_size = 14,
-          pickable = FALSE
-        )
+      if (!is.null(cl_data)) {
+        cl <- cl_data$lines
+        cl_pts <- cl_data$labels
+        
+        if (!is.null(cl) && nrow(cl) > 0) {
+          proxy <- proxy %>% add_path_layer(
+            id = "contour_lines",
+            data = cl,
+            get_path = geometry,
+            get_color = "#ffffff",
+            width_min_pixels = 2,
+            opacity = 0.8
+          )
+          
+          if (!is.null(cl_pts) && nrow(cl_pts) > 0) {
+            proxy <- proxy %>% add_text_layer(
+              id = "contour_labels",
+              data = cl_pts,
+              get_position = geometry,
+              get_text = label,
+              get_color = "#ffffff",
+              size_units = "pixels",
+              get_size = 14,
+              get_alignment_baseline = "center",
+              get_text_anchor = "middle",
+              background = TRUE,
+              get_background_color = "#000000aa"
+            )
+          }
+        }
       } else {
-        proxy <- proxy %>% 
-          add_path_layer(id = "contour_layer", data = st_sf(geometry=st_sfc(), h_color=numeric()), get_path=geometry) %>%
-          add_text_layer(id = "contour_labels", data = st_sf(geometry=st_sfc(), label=character()), get_position=geometry, get_text=label)
+        proxy <- proxy %>%
+          add_path_layer(id = "contour_lines", data = st_sf(geometry = st_sfc(), h_color = numeric()), get_path = geometry) %>%
+          add_text_layer(id = "contour_labels", data = st_sf(geometry = st_sfc(), label = character()), get_position = geometry, get_text = label)
       }
     } else {
       proxy <- proxy %>% 
-        add_path_layer(id = "contour_layer", data = st_sf(geometry=st_sfc(), h_color=numeric()), get_path=geometry) %>%
+        add_path_layer(id = "contour_lines", data = st_sf(geometry=st_sfc(), h_color=numeric()), get_path=geometry) %>%
         add_text_layer(id = "contour_labels", data = st_sf(geometry=st_sfc(), label=character()), get_position=geometry, get_text=label)
     }
   })
   
+  # Recenter the camera on the model extent.
+  observeEvent(input$focus_model, {
+    req(grid_outline())
+    bbox <- st_bbox(grid_outline())
+    if ((bbox["xmax"] - bbox["xmin"]) < 1e-4) {
+      bbox["xmax"] <- bbox["xmax"] + 1e-4; bbox["xmin"] <- bbox["xmin"] - 1e-4
+    }
+    if ((bbox["ymax"] - bbox["ymin"]) < 1e-4) {
+      bbox["ymax"] <- bbox["ymax"] + 1e-4; bbox["ymin"] <- bbox["ymin"] - 1e-4
+    }
+    rdeck_proxy("my_rdeck", initial_bounds = bbox)
+  })
+
   # Handle map clicks
   observeEvent(input$my_rdeck_click, {
     info <- input$my_rdeck_click
@@ -550,8 +784,12 @@ server <- function(input, output, session) {
   nodes_per_layer <- reactive({
     req(head_ds())
     if (!is.null(grid_path())) {
-      # Fast fallback if grid is loaded
-      grid_sf() %>% filter(layer == 1) %>% nrow()
+      df <- grid_sf()
+      n_per_lay <- nrow(df)
+      if ("layer" %in% names(df)) {
+        n_per_lay <- df %>% filter(layer == 1) %>% nrow()
+      }
+      n_per_lay
     } else {
       # Compute mathematically from parquet metadata
       head_ds() %>% summarize(n = max(nodenumberL1)) %>% collect() %>% pull(n)
@@ -562,11 +800,27 @@ server <- function(input, output, session) {
   node_hydr <- reactive({
     req(head_ds(), input$nodenumber, time_df())
     node_id <- as.integer(input$nodenumber)
-    n_layer <- nodes_per_layer()
-    
-    lay_target <- (node_id - 1) %/% n_layer + 1
-    nl1_target <- (node_id - 1) %% n_layer + 1
-    
+
+    # Resolve (layer, per-layer node) for this node id. Prefer the grid as the
+    # source of truth: DISU/USG grids carry layer + nodenumberL1 per node, while
+    # structured/DISV grids share one geometry across layers (use selected layer).
+    lay_target <- as.integer(input$select_layer)
+    nl1_target <- node_id
+    g <- tryCatch(grid_sf(), error = function(e) NULL)
+    if (!is.null(g)) {
+      gdf <- sf::st_drop_geometry(g)
+      hit <- if ("nodenumber" %in% names(gdf)) gdf[gdf$nodenumber == node_id, , drop = FALSE] else gdf[0, ]
+      if (nrow(hit) >= 1) {
+        if ("nodenumberL1" %in% names(hit)) nl1_target <- as.integer(hit$nodenumberL1[1])
+        if ("layer" %in% names(hit)) lay_target <- as.integer(hit$layer[1])
+      }
+    } else {
+      # Heads-only (no grid): fall back to uniform global-node decomposition.
+      n_layer <- nodes_per_layer()
+      lay_target <- (node_id - 1) %/% n_layer + 1
+      nl1_target <- (node_id - 1) %% n_layer + 1
+    }
+
     # Query arrow dataset for this specific node across all time
     h_time <- head_ds() %>%
       filter(layer == lay_target, nodenumberL1 == nl1_target) %>%
