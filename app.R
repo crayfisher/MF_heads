@@ -428,16 +428,22 @@ server <- function(input, output, session) {
     g
   })
   
-  # Outline for initial bounds
+  # Cached attribute table (no geometry) for node lookups - avoids copying the
+  # full grid geometry on every node change.
+  grid_attrs <- reactive({
+    req(grid_sf())
+    sf::st_drop_geometry(grid_sf())
+  })
+
+  # Outline for initial bounds - just the bounding box (st_union over tens of
+  # thousands of polygons is needlessly slow/heavy; we only need the extent).
   grid_outline <- reactive({
     req(grid_sf())
     df <- grid_sf()
     if ("layer" %in% names(df)) {
       df <- df %>% filter(layer == 1)
     }
-    df %>% 
-      st_union() %>%
-      st_transform(4326)
+    st_as_sfc(st_bbox(df)) %>% st_transform(4326)
   })
   
   # Head Dataset & Times
@@ -822,9 +828,8 @@ server <- function(input, output, session) {
     # structured/DISV grids share one geometry across layers (use selected layer).
     lay_target <- as.integer(input$select_layer)
     nl1_target <- node_id
-    g <- tryCatch(grid_sf(), error = function(e) NULL)
-    if (!is.null(g)) {
-      gdf <- sf::st_drop_geometry(g)
+    gdf <- tryCatch(grid_attrs(), error = function(e) NULL)
+    if (!is.null(gdf)) {
       hit <- if ("nodenumber" %in% names(gdf)) gdf[gdf$nodenumber == node_id, , drop = FALSE] else gdf[0, ]
       if (nrow(hit) >= 1) {
         if ("nodenumberL1" %in% names(hit)) nl1_target <- as.integer(hit$nodenumberL1[1])
