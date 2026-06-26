@@ -35,6 +35,35 @@ destabilising the working build.
   drawdown works directly from model output. (Standard HeadFile + USG HeadUFile;
   DISU flat output is not layer-split.)
 
+## Delivered 2026-06-26 (session 2)
+- [x] **Bundled demo / test data.** `demo/<name>/` holds pre-processed outputs;
+  a UI selector auto-discovers any folder with `Grid.parquet` and loads it
+  instantly. A bundled `Heads_baseline.parquet` auto-enables Drawdown. `demo/`
+  is gitignored but copied into the Docker image. Generators:
+  `scripts/make_demo.py` (--grid/--heads/--baseline/--frames all|N) and
+  `scripts/make_null_run.py`. Shipped `demo/hpm` = HPM mf2005, **5 years (60
+  monthly frames)**, scenario + no-pumping null baseline (~191 MB).
+- [x] **Load different scenarios after the base model.** New "Swap Scenario"
+  uploader (.hds/.parquet) overrides heads while keeping the loaded grid;
+  baseline `.hds` works the same way. Status indicator shows when an override is
+  active. Loading a new base model clears overrides.
+- [x] **Docker runs full model processing.** flopy + python added to
+  `environment.yml`, `scripts/` un-excluded, `RGW_CONDA_ENV`/`RGW_CONDA_RUN`
+  make the processing command env-aware (image runs `python`/`Rscript` directly
+  in the active `base` env). ZIP + scenario/baseline `.hds` now work in-container.
+- [x] **Fix: demo drawdown was 0 everywhere.** `hds_path` was picking the
+  bundled baseline parquet as the scenario (scenario == baseline). Now excludes
+  `grid|qtgrid|baseline` and prefers the exact `Heads.parquet`.
+
+## Known limitations / follow-ups
+- [ ] **HPM null run convergence.** Removing WEL left 46/420 stress periods not
+  fully GMG-converged. Fine for a demo baseline; regenerate from a properly
+  re-calibrated no-pumping run if a production baseline is needed.
+- [ ] **DISU baseline/scenario `.hds`.** `heads` mode does not layer-split flat
+  DISU output; baseline/scenario swap for DISU is unsupported.
+
 ## Next stage
 - [ ] **Merge with `.lst` reader** - integrate listing-file parsing (budget /
-  mass-balance / convergence) alongside the heads visualizer. New session.
+  mass-balance / convergence) alongside the heads visualizer. Recommended as a
+  `page_navbar` page in THIS app (one image/env), not a separate container.
+  Existing `.lst` app is `../RGWchart` (rocker/shiny-verse + reticulate).

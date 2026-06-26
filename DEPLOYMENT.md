@@ -122,10 +122,12 @@ explicit `--heads` (scenario) and optional `--baseline` (null) `.hds` files:
 # Optional: build a no-pumping "null" run to use as the drawdown baseline.
 conda run -n flopy_env python scripts/make_null_run.py data/HPM HPM_M3.nam HPM_null --remove WEL
 
-# Assemble the demo (full run + baseline). Use --frames 60 for a smaller bundle.
+# Assemble the demo. The shipped demo/hpm uses --frames 60 (5 years monthly,
+# ~191 MB: Grid 8 + Heads 96 + Baseline 96). Use --frames all for the full
+# 35-year run (~977 MB) or --frames 36 (3 years, ~175 MB).
 conda run -n flopy_env python scripts/make_demo.py --out demo/hpm \
     --grid data/HPM.zip --model-type mf2005 \
-    --heads data/HPM/HPM_M3.hds --baseline data/HPM/HPM_null.hds --frames all
+    --heads data/HPM/HPM_M3.hds --baseline data/HPM/HPM_null.hds --frames 60
 ```
 
 > **Full processing in the container:** ZIP upload and scenario/baseline `.hds`
@@ -156,7 +158,50 @@ docker run -p 3838:3838 -e APP_PASSWORD="MySuperSecurePassword123" rgw_heads_app
 
 **Detached/Daemon Mode (For production deployment):**
 ```bash
-docker run -d --restart unless-stopped -p 3838:3838 -e APP_PASSWORD="MySuperSecurePassword123" rgw_heads_app
+docker run -d --restart unless-stopped --name rgw_heads \
+  -p 3838:3838 -e APP_PASSWORD="MySuperSecurePassword123" rgw_heads_app
 ```
 
 Once running, the application will be accessible at: `http://<your-server-ip>:3838` or `http://localhost:3838`.
+
+## 6. Running alongside another app (e.g. RGWchart)
+
+`3838` is the port *inside* the container; `-p HOST:CONTAINER` maps it to a host
+port. Two containers cannot share the same **host** port, but each keeps its own
+internal `3838`, so just map them to different host ports — **no need to stop the
+other app**:
+
+```bash
+# RGWchart already running on host port 3838
+docker run -d --restart unless-stopped --name rgw_heads \
+  -p 3839:3838 -e APP_PASSWORD="..." rgw_heads_app
+```
+
+RGWheads is then at `http://<server>:3839`, RGWchart stays at `:3838`.
+
+**Cleaner URLs (recommended next):** put a reverse proxy on 443 in front of both
+and route by subdomain (add DNS A-records → server). [Caddy](https://caddyserver.com)
+gives automatic HTTPS and handles Shiny's websockets out of the box:
+
+```
+# /etc/caddy/Caddyfile
+chart.crayfisher.com { reverse_proxy localhost:3838 }
+heads.crayfisher.com { reverse_proxy localhost:3839 }
+```
+
+Then both are reachable as clean `https://chart.crayfisher.com` /
+`https://heads.crayfisher.com` with no port numbers. See §1b for when to graduate
+to a shared base image or ShinyProxy (per-user isolation/scaling) — both can wait
+until you have multiple concurrent users.
+
+## 7. Local test deploy (verifying this build)
+
+Before deploying to the server, smoke-test locally:
+
+```bash
+docker build -t rgw_heads_app .
+docker run -d --rm --name rgw_heads_test -p 3839:3838 -e APP_PASSWORD=test rgw_heads_app
+# open http://localhost:3839 ; load the HPM demo; toggle Heads/Drawdown
+docker logs -f rgw_heads_test     # watch for processing/runtime errors
+docker stop rgw_heads_test
+```
