@@ -7,9 +7,16 @@ data/
 .Ruserdata
 *.Rproj
 app_backup.R
-scripts/
 __pycache__/
 *.hds
 *.gpkg
 *.parquet
 *.csv
+
+# Keep the bundled demo data in the image despite the rules above. Note: demo/
+# is gitignored (not committed), but the Docker *build context* is the working
+# directory, not git - so as long as demo/ exists locally when you run
+# `docker build`, it is copied into the image. Generate it first with
+# scripts/make_demo.py on a machine that has flopy.
+!demo/
+!demo/**

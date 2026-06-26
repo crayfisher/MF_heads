@@ -10,3 +10,7 @@
 data/
 app_backup.R
 __pycache__/
+
+# Demo/test data is NOT committed to git (can be large). It is still copied into
+# the Docker image via the build context - see the !demo/ rule in .dockerignore.
+demo/

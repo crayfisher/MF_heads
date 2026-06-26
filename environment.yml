@@ -21,3 +21,12 @@ dependencies:
   - r-lubridate
   - r-sfarrow
   - r-remotes
+  # Python + flopy power model processing (ZIP extraction, .hds -> parquet) so
+  # ZIP upload and scenario/baseline .hds loading work inside the container.
+  # Note: this enables *reading* model output. Running models (null runs,
+  # automation) additionally needs MODFLOW executables (e.g. via `get-modflow`).
+  - python
+  - flopy
+  - pandas
+  - numpy
+  - pyarrow

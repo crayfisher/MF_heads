@@ -8,6 +8,39 @@ The Docker container is built on top of **`mambaorg/micromamba`** rather than th
 *   **Why?** Geospatial R packages (`sf`, `stars`, `arrow`) require massive system-level libraries (GDAL, GEOS, PROJ, C++ compilers) that take hours to compile from source in standard Linux environments. 
 *   **The Fix:** By using Conda/Micromamba, we instantly download the pre-compiled binary versions of these libraries, reducing build times from hours to minutes.
 
+## 1b. Scaling strategy (multiple apps / a model platform)
+
+This image currently bundles *everything*: the heavy conda env (R geo stack +
+rdeck + python + flopy) **and** the app code + demo data. That is fine for one
+app, but the roadmap (per-client apps, a properties/BC viewer, hosted-model
+automation, an AI run-assistant) is better served by separating concerns:
+
+1.  **Base runtime image (build rarely).** A `Dockerfile.base` that stops after
+    the `micromamba install` + `rdeck` build → tag `rgw-base:latest`. This is the
+    slow, ~GB layer (GDAL/PROJ/flopy/rdeck). It almost never changes.
+
+2.  **Per-app images (build often, cheap).** Each app's `Dockerfile` is
+    `FROM rgw-base:latest` + `COPY` of just that app's code and its `demo/` /
+    client config. Rebuilds are seconds, and every client app is guaranteed an
+    identical runtime. The app reads its config from env vars (`APP_PASSWORD`,
+    `RGW_CONDA_ENV`, and e.g. a future `RGW_APP_TITLE` / `RGW_DEMO_DIR`).
+
+3.  **Separate the "runner" from the "viewer" (longer term).** For hosted models
+    with weekly WEL/recharge updates, run a **processing service** (flopy +
+    MODFLOW executables, on a cron/queue) that writes parquet outputs to a shared
+    volume or object store. The Shiny viewers (this heads app, the `.lst`
+    budget/convergence reader, future BC viewer) stay lean and just *read* those
+    parquet outputs. The AI "run assistant" becomes another client of the same
+    runner API. This keeps the GPU/parsing-heavy work off the interactive apps
+    and lets each app scale independently.
+
+**For today/tomorrow:** deploy this single self-contained image as-is (it now does
+full ZIP/HDS processing). Adopt the base-image split (#1/#2) when you stand up the
+second client app; defer the runner/viewer split (#3) until automation starts.
+Merging the `.lst` reader is cleanest as **another page in this same app**
+(`page_navbar` with a "Heads" page and a "Listing" page) sharing one image/env —
+not a second container.
+
 ## 2. Environment Management (`environment.yml`)
 
 The application's dependencies are tracked strictly in `environment.yml`. 
@@ -28,6 +61,80 @@ The application is protected behind a login screen using `shinymanager`.
 *   **Username:** `viewer`
 *   **Password:** The password is **never** hardcoded into `app.R` or the Docker image. 
 *   It securely reads from an environment variable (`APP_PASSWORD`) that you inject at runtime. If you run the app locally in RStudio without Docker, it will default to `rgw_secret` so your local development is not interrupted.
+
+## 3b. Bundled Demo / Test Data
+
+For demonstrations the app ships a **pre-processed sample model** under `demo/`.
+Each demo is a folder (e.g. `demo/hpm/`) holding the already-processed outputs the
+app loads directly:
+
+```
+demo/hpm/
+  Grid.parquet            # sf polygons (nodenumber, nodenumberL1, row/col)
+  Heads.parquet           # SP, layer, nodenumberL1, h        (scenario)
+  Heads_baseline.parquet  # same schema (optional null run)   -> enables Drawdown
+  Times.csv               # time, kstp, kper, SP
+  crs_used.txt  sentinels.txt  time_units.txt  start_date.txt  model_type.txt
+```
+
+In the UI a **"Demo / Test Data"** selector + **Load** button (under *1. Data
+Uploads*) loads any folder found in `demo/` instantly — **no upload, no flopy, no
+model processing at runtime**. The app auto-discovers any subfolder of `demo/`
+that contains a `Grid.parquet`, so adding more demos is just dropping in another
+folder. If a demo also contains `Heads_baseline.parquet` (e.g. a no-pumping
+"null" run), **Drawdown** is wired up automatically on load.
+
+### git vs. Docker (demo is NOT committed)
+
+`demo/` is **gitignored** — demo data can be large and does not belong in the
+repo. It is still shipped to the server *inside the image*, because the Docker
+**build context is the working directory, not git**:
+
+*   `.dockerignore` has `!demo/` / `!demo/**` exceptions, so `COPY . /app` copies
+    `demo/` into the image as long as the folder exists locally when you build.
+*   **Therefore: generate `demo/` (below) on the build machine before
+    `docker build`.** A bare `git clone` will not contain it.
+
+The image already excludes `scripts/`, `data/` and the raw model files to stay
+lean and avoid running flopy at runtime — the demo only needs the small
+parquet/csv outputs, so it behaves identically in the container and locally.
+
+### Size / time resolution
+
+Full transient models are large (HPM = **420 monthly stress periods ≈ 35 years**,
+~485 MB of heads per run). You control the trade-off with `--frames`:
+
+*   `--frames all` keeps every stress period (full seasonality). With a scenario
+    **and** a baseline this can be several hundred MB — fine if you are happy with
+    the server/image size.
+*   `--frames 60` keeps the first 60 *consecutive* months (5 years), renumbered
+    `1..60`, preserving monthly seasonal behaviour at a fraction of the size.
+
+The real model `time` (days) is always preserved for the calendar axis.
+
+### Regenerating / adding a demo
+
+Needs `flopy_env` (flopy + a MODFLOW exe); run locally, not in the container.
+Geometry/metadata come from a light `--grid` source; the heavy heads come from
+explicit `--heads` (scenario) and optional `--baseline` (null) `.hds` files:
+
+```bash
+# Optional: build a no-pumping "null" run to use as the drawdown baseline.
+conda run -n flopy_env python scripts/make_null_run.py data/HPM HPM_M3.nam HPM_null --remove WEL
+
+# Assemble the demo (full run + baseline). Use --frames 60 for a smaller bundle.
+conda run -n flopy_env python scripts/make_demo.py --out demo/hpm \
+    --grid data/HPM.zip --model-type mf2005 \
+    --heads data/HPM/HPM_M3.hds --baseline data/HPM/HPM_null.hds --frames all
+```
+
+> **Full processing in the container:** ZIP upload and scenario/baseline `.hds`
+> loading run flopy via `scripts/`, which **are** included in the image (flopy is
+> in `environment.yml`, and the Dockerfile sets `RGW_CONDA_ENV=base` /
+> `RGW_CONDA_RUN=""` so the app calls `python`/`Rscript` directly in the active
+> env — there is no `conda` binary in the micromamba image). *Running* models
+> (null runs, weekly automation) additionally needs MODFLOW executables, e.g.
+> `micromamba run -n base get-modflow :flopy` at build time.
 
 ## 4. Building the Image
 

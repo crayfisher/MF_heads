@@ -29,6 +29,14 @@ if (!file.exists(file.path(APP_DIR, "scripts", "process_model.R"))) {
 }
 message("[Startup] APP_DIR = ", APP_DIR)
 
+# Command prefix used to run flopy tooling (ZIP extraction, .hds -> parquet).
+# Locally we shell out via conda into the dev env. In the Docker image the env
+# is already active (and there is no `conda` binary), so set RGW_CONDA_RUN=""
+# to call python/Rscript directly. RGW_CONDA_ENV picks the env for the default.
+CONDA_ENV <- Sys.getenv("RGW_CONDA_ENV", "flopy_env")
+PROC_PREFIX <- Sys.getenv("RGW_CONDA_RUN", paste("conda run -n", CONDA_ENV))
+message("[Startup] CONDA_ENV = ", CONDA_ENV, " | PROC_PREFIX = '", PROC_PREFIX, "'")
+
 # Define custom premium theme using bslib
 app_theme <- bs_theme(
   bootswatch = "darkly",
@@ -103,9 +111,34 @@ ui <- page_sidebar(
         ),
         uiOutput("georef_help"),
         hr(style = "border-top: 1px solid #334155; margin: 10px 0;"),
-        fileInput("upload_files", "Or Manual Parquet Upload (Grid, Heads, Times)",
-                  accept = c(".parquet", ".csv"), multiple = TRUE, buttonLabel = "Browse..."),
-        fileInput("upload_baseline", "Optional: Upload Baseline Heads (.parquet) for Drawdown", accept = c(".parquet"), multiple = FALSE, buttonLabel = "Browse...")
+        div(style = "display: flex; align-items: center; gap: 10px;",
+            fileInput("upload_files", "Or Manual Parquet Upload (Grid, Heads, Times)",
+                      accept = c(".parquet", ".csv"), multiple = TRUE, buttonLabel = "Browse..."),
+            tooltip(
+              icon("question-circle"),
+              uiOutput("manual_help")
+            )
+        ),
+        div(style = "font-size: 0.78rem; color: #94a3b8; margin: -8px 0 8px;",
+            "Works for ", strong("any"), " model type — it loads already-processed ",
+            "parquet/CSV outputs and is grid-type agnostic (not USG-only)."),
+        hr(style = "border-top: 1px solid #334155; margin: 10px 0;"),
+        div(strong(icon("retweet"), " Swap Scenario (keeps current grid)"),
+            style = "font-size: 0.9rem; margin-bottom: 6px;"),
+        div(style = "display: flex; align-items: center; gap: 10px;",
+            fileInput("upload_scenario", "Load Scenario Heads (.hds / .parquet)",
+                      accept = c(".hds", ".parquet"), multiple = FALSE, buttonLabel = "Browse..."),
+            tooltip(
+              icon("question-circle"),
+              uiOutput("scenario_help")
+            )
+        ),
+        fileInput("upload_baseline", "Optional: Baseline Heads (.parquet/.hds) for Drawdown",
+                  accept = c(".parquet", ".hds"), multiple = FALSE, buttonLabel = "Browse..."),
+        hr(style = "border-top: 1px solid #334155; margin: 10px 0;"),
+        # Bundled demo / test data - loads instantly (pre-processed parquet), no
+        # upload or model-processing needed. Handy for demonstrations.
+        uiOutput("demo_ui")
       ),
       accordion_panel(
         "2. File Status",
@@ -113,6 +146,7 @@ ui <- page_sidebar(
         div(style="font-size: 0.85em; line-height: 1.8;",
           uiOutput("status_grd"),
           uiOutput("status_hds"),
+          uiOutput("status_scenario"),
           uiOutput("status_baseline"),
           uiOutput("status_time")
         )
@@ -207,6 +241,9 @@ server <- function(input, output, session) {
   # Reference info resolved from the last processed model.
   model_crs <- reactiveVal("NONE")          # EPSG string or "NONE"
   model_time_units <- reactiveVal("unknown")  # days / seconds / ...
+  # Model type of the currently loaded data ("usg"/"mf6"/"mf2005"/"manual").
+  # Used to decide whether row/col are meaningful (only structured DIS/MF2005).
+  loaded_model_type <- reactiveVal(NULL)
 
   # Convert model time (in its own units) to days for the calendar axis.
   time_to_days <- function(t, units) {
@@ -253,17 +290,66 @@ server <- function(input, output, session) {
     span(body)
   })
 
+  # Manual upload tooltip: the expected files + schema. Grid-type agnostic - it
+  # loads already-processed outputs, so it works for any model type, not just USG.
+  output$manual_help <- renderUI({
+    div(style = "text-align:left; min-width: 280px;",
+      div(strong("Manual upload (any model type)"), " — drag the processed outputs:"),
+      tags$ul(style = "margin:6px 0 0; padding-left: 18px;",
+        tags$li(tags$code("Grid.parquet"), " — sf polygons with ",
+                tags$code("nodenumber"), ", ", tags$code("nodenumberL1"),
+                ", optional ", tags$code("layer"), "."),
+        tags$li(tags$code("Heads.parquet"), " — columns ",
+                tags$code("SP"), ", ", tags$code("layer"), ", ",
+                tags$code("nodenumberL1"), ", ", tags$code("h"), "."),
+        tags$li(tags$code("Times.csv"), " — columns ",
+                tags$code("time"), ", ", tags$code("SP"), " (+ kstp/kper).")
+      )
+    )
+  })
+
+  # Scenario swap tooltip.
+  output$scenario_help <- renderUI({
+    div(style = "text-align:left; min-width: 280px;",
+      div(strong("Swap scenario heads")),
+      div(style = "margin-top:4px;",
+          "After loading a model (ZIP / manual / demo), load a different run's ",
+          "heads to compare scenarios — the ", strong("grid stays the same"), "."),
+      tags$ul(style = "margin:6px 0 0; padding-left: 18px;",
+        tags$li(tags$code(".hds"), " — extracted via flopy (same model type as ",
+                "the loaded grid), brings its own stress-period timeline."),
+        tags$li(tags$code(".parquet"), " — a pre-processed Heads.parquet (",
+                tags$code("SP, layer, nodenumberL1, h"), "), used directly.")
+      ),
+      div(style = "margin-top:4px; color:#94a3b8;",
+          "Must share the loaded grid's node numbering. Load a new model to reset.")
+    )
+  })
+
   # Georeferencing instructions + example sidecar, shown under the ZIP input.
   output$georef_help <- renderUI({
-    if ((input$model_type %||% "mf6") == "mf2005") {
-      div(style = "font-size: 0.78rem; color: #94a3b8; background:#0f172a; padding:8px; border-radius:6px; border:1px solid #334155;",
+    box_style <- "font-size: 0.78rem; color: #94a3b8; background:#0f172a; padding:8px; border-radius:6px; border:1px solid #334155;"
+    mt <- input$model_type %||% "mf6"
+    if (mt == "mf2005") {
+      div(style = box_style,
           strong("Georeferencing: "), "read automatically from the flopy nam-file header ",
           tags$code("#xll:..; yll:..; rotation:..; proj4_str:epsg:XXXX; start_datetime:.."),
           ". No CRS → unreferenced view (no basemap).")
+    } else if (mt == "usg") {
+      # USG geometry comes from the gpkg/shp, which already carries its own CRS.
+      # A usgs.model.reference sidecar does NOT apply to this workflow.
+      div(style = box_style,
+          strong("Georeferencing: "),
+          "the CRS is read directly from the grid file's own embedded projection ",
+          "(the ", tags$code(".gpkg"), " from gridgen). Geometry, global node numbers ",
+          "and the layer field all come from that file — no ",
+          tags$code("usgs.model.reference"), " sidecar is needed. ",
+          "If the gpkg has no CRS the model is shown unreferenced (no basemap).")
     } else {
-      div(style = "font-size: 0.78rem; color: #94a3b8; background:#0f172a; padding:8px; border-radius:6px; border:1px solid #334155;",
+      div(style = box_style,
           strong("Georeferencing (optional): "),
-          "include a ", tags$code("usgs.model.reference"), " file in the ZIP to place the model on the map. Example:",
+          "MF6 files store no CRS. Include a ", tags$code("usgs.model.reference"),
+          " file in the ZIP to place the model on the map. Example:",
           tags$pre(style = "margin:6px 0 0; white-space:pre; color:#cbd5e1;",
                    "xll 1891460.0\nyll 5594400.0\nrotation 0.0\nepsg 2193\nstart_date 1980-07-01"),
           "Without it the model is shown unreferenced (no basemap).")
@@ -291,6 +377,10 @@ server <- function(input, output, session) {
     if (is.null(hds_path())) span(icon("times-circle"), " Heads missing", style="color:#ef4444")
     else span(icon("check-circle"), " Heads loaded", style="color:#10b981")
   })
+  output$status_scenario <- renderUI({
+    if (is.null(scenario_heads())) span(icon("circle"), " Base heads (no scenario override)", style="color:#94a3b8")
+    else span(icon("retweet"), " Scenario override active", style="color:#0ea5e9")
+  })
   output$status_baseline <- renderUI({
     if (is.null(hds2_path())) span(icon("info-circle"), " No Baseline (Drawdown disabled)", style="color:#94a3b8")
     else span(icon("check-circle"), " Baseline loaded", style="color:#10b981")
@@ -310,13 +400,26 @@ server <- function(input, output, session) {
     # Remove older files with the same name if re-uploaded
     current_files <- current_files[!(current_files$name %in% new_files$name), ]
     updated_files <- rbind(current_files, new_files[, c("name", "datapath")])
-    
+
     uploaded_files(updated_files)
+    # Manual parquet upload is grid-type agnostic; mark it so we don't assume
+    # the model_type dropdown (which only governs ZIP uploads) applies here.
+    loaded_model_type("manual")
+    # A manual upload defines its own heads; drop any scenario override.
+    scenario_heads(NULL)
+    scenario_times(NULL)
   })
   
   # Apply the processed model's output dir + metadata to the session. Runs on the
   # main thread once the background job resolves.
-  apply_processed_model <- function(out_dir) {
+  apply_processed_model <- function(out_dir, mtype = NULL) {
+    loaded_model_type(mtype)
+    # Clear any baseline + scenario override from a previously loaded model (the
+    # demo loader re-sets the baseline afterwards if the demo bundles one); avoids
+    # a stale drawdown reference or scenario heads carrying over to a new model.
+    baseline_parquet(NULL)
+    scenario_heads(NULL)
+    scenario_times(NULL)
     out_files <- list.files(out_dir, full.names = TRUE)
     if (length(out_files) == 0) {
       removeModal()
@@ -355,6 +458,57 @@ server <- function(input, output, session) {
                      type = "message")
   }
 
+  # --- Bundled demo / test data -------------------------------------------
+  # Each demo lives in demo/<name>/ as the already-processed outputs
+  # (Grid.parquet, Heads.parquet, Times.csv + *.txt sidecars), so it loads
+  # instantly with no flopy/parser dependency - ideal for the Docker image.
+  demo_base <- file.path(APP_DIR, "demo")
+  demo_dirs <- reactive({
+    if (!dir.exists(demo_base)) return(character(0))
+    subs <- list.dirs(demo_base, full.names = FALSE, recursive = FALSE)
+    subs[file.exists(file.path(demo_base, subs, "Grid.parquet"))]
+  })
+
+  output$demo_ui <- renderUI({
+    dirs <- demo_dirs()
+    if (length(dirs) == 0) return(NULL)
+    # Friendly labels (e.g. "hpm" -> "HPM").
+    labels <- toupper(dirs)
+    choices <- setNames(dirs, labels)
+    tagList(
+      div(strong(icon("flask"), " Demo / Test Data"),
+          style = "font-size: 0.9rem; margin-bottom: 6px;"),
+      div(style = "display: flex; gap: 8px; align-items: flex-end;",
+        div(style = "flex-grow: 1;",
+            selectInput("demo_choice", NULL, choices = choices, width = "100%")),
+        actionButton("load_demo", "Load", icon = icon("play"),
+                     class = "btn-info btn-sm", style = "margin-bottom: 0;")
+      ),
+      div(style = "font-size: 0.78rem; color: #94a3b8;",
+          "Pre-processed sample model for demonstration - loads instantly.")
+    )
+  })
+
+  observeEvent(input$load_demo, {
+    req(input$demo_choice)
+    ddir <- file.path(demo_base, input$demo_choice)
+    req(dir.exists(ddir))
+    mt <- {
+      f <- file.path(ddir, "model_type.txt")
+      if (file.exists(f)) trimws(readLines(f, warn = FALSE)[1]) else "manual"
+    }
+    apply_processed_model(ddir, mt)
+    # If the demo bundles a baseline (e.g. a no-pumping "null" run), wire it up
+    # so Drawdown works out of the box without a separate upload.
+    bl <- file.path(ddir, "Heads_baseline.parquet")
+    if (file.exists(bl)) {
+      baseline_parquet(bl)
+      showNotification("Demo baseline loaded - Drawdown available.", type = "message")
+    } else {
+      baseline_parquet(NULL)
+    }
+  })
+
   observeEvent(input$upload_zip, {
     req(input$upload_zip)
 
@@ -376,13 +530,13 @@ server <- function(input, output, session) {
     # the Shiny event loop keeps answering heartbeats and never disconnects.
     future_promise({
       unzip(zip_path, exdir = temp_dir)
-      cmd <- sprintf("conda run -n flopy_env Rscript %s %s %s %s",
-                     shQuote(process_script), mtype, shQuote(temp_dir), shQuote(out_dir))
+      cmd <- sprintf("%s Rscript %s %s %s %s",
+                     PROC_PREFIX, shQuote(process_script), mtype, shQuote(temp_dir), shQuote(out_dir))
       res <- system(cmd, intern = FALSE, ignore.stdout = TRUE, ignore.stderr = TRUE)
       list(res = res, out_dir = out_dir)
     }, seed = TRUE) %...>% (function(result) {
       if (result$res == 0) {
-        apply_processed_model(result$out_dir)
+        apply_processed_model(result$out_dir, mtype)
       } else {
         removeModal()
         showNotification("Model processing failed (non-zero exit).", type = "error")
@@ -404,22 +558,107 @@ server <- function(input, output, session) {
     files$datapath[idx[1]]
   })
   
+  # Active scenario overrides. Once a base model is loaded (ZIP/manual/demo), a
+  # different scenario's heads can be swapped in while reusing the same grid:
+  # scenario_heads holds the active Heads.parquet, scenario_times its timeline.
+  scenario_heads <- reactiveVal(NULL)
+  scenario_times <- reactiveVal(NULL)
+
   hds_path <- reactive({
+    if (!is.null(scenario_heads())) return(scenario_heads())
     req(nrow(uploaded_files()) > 0)
     files <- uploaded_files()
     idx_p <- grep("\\.parquet$", files$name, ignore.case = TRUE)
-    idx_g <- grep("grid|qtgrid", files$name, ignore.case = TRUE)
-    idx <- setdiff(idx_p, idx_g)
-    if(length(idx) == 0) return(NULL)
+    # Exclude grid geometry AND any baseline heads (a demo bundles
+    # Heads_baseline.parquet alongside Heads.parquet) - the baseline must never
+    # be picked as the scenario, or drawdown = baseline - baseline = 0.
+    idx_excl <- grep("grid|qtgrid|baseline", files$name, ignore.case = TRUE)
+    idx <- setdiff(idx_p, idx_excl)
+    if (length(idx) == 0) return(NULL)
+    # Prefer an exact "Heads.parquet" when present (deterministic, not order-dependent).
+    exact <- intersect(grep("(^|/)Heads\\.parquet$", files$name, ignore.case = TRUE), idx)
+    if (length(exact) > 0) return(files$datapath[exact[1]])
     files$datapath[idx[1]]
   })
-  
-  hds2_path <- reactive({
-    req(input$upload_baseline)
-    input$upload_baseline$datapath
+
+  # Shared helper: extract a .hds to a heads parquet (+Times.csv) in a background
+  # worker, then hand the output dir to on_success. Used for both scenario and
+  # baseline uploads. USG uses HeadUFile; everything else the standard HeadFile.
+  process_hds_async <- function(hds_src, title, on_success, on_fail = NULL) {
+    showModal(modalDialog(title = title,
+                          "Extracting heads from the .hds file.", footer = NULL))
+    out_dir <- tempfile(pattern = "hds_out_")
+    dir.create(out_dir)
+    mode <- if (identical(loaded_model_type(), "usg")) "heads_usg" else "heads"
+    py_script <- file.path(APP_DIR, "scripts", "flopy_parser.py")
+    future_promise({
+      cmd <- sprintf("%s python %s %s %s %s",
+                     PROC_PREFIX, shQuote(py_script), mode, shQuote(hds_src), shQuote(out_dir))
+      res <- system(cmd, intern = FALSE, ignore.stdout = TRUE, ignore.stderr = TRUE)
+      list(res = res, out_dir = out_dir)
+    }, seed = TRUE) %...>% (function(result) {
+      removeModal()
+      heads <- file.path(result$out_dir, "Heads.parquet")
+      if (result$res == 0 && file.exists(heads)) {
+        on_success(result$out_dir)
+      } else {
+        showNotification("Failed to extract heads from .hds.", type = "error")
+        if (!is.null(on_fail)) on_fail()
+      }
+    }) %...!% (function(err) {
+      removeModal()
+      showNotification(paste("Extraction error:", conditionMessage(err)), type = "error")
+      if (!is.null(on_fail)) on_fail()
+    })
+  }
+
+  # Load a different scenario's heads on top of the current grid (.hds extracted
+  # via flopy; .parquet used directly). The grid/geometry stays from the base.
+  observeEvent(input$upload_scenario, {
+    req(input$upload_scenario)
+    f <- input$upload_scenario
+    ext <- tolower(tools::file_ext(f$name))
+    if (ext == "parquet") {
+      scenario_heads(f$datapath)
+      scenario_times(NULL)  # parquet scenario keeps the base timeline
+      showNotification("Scenario heads loaded (parquet).", type = "message")
+      return(invisible())
+    }
+    process_hds_async(f$datapath, "Processing Scenario...",
+      on_success = function(out_dir) {
+        scenario_heads(file.path(out_dir, "Heads.parquet"))
+        tf <- file.path(out_dir, "Times.csv")
+        scenario_times(if (file.exists(tf)) tf else NULL)
+        showNotification("Scenario heads extracted from .hds.", type = "message")
+      })
   })
-  
+
+  # Baseline heads for drawdown. A .parquet is used directly; a .hds is run
+  # through the parser to produce a heads parquet so drawdown works from output.
+  baseline_parquet <- reactiveVal(NULL)
+
+  observeEvent(input$upload_baseline, {
+    req(input$upload_baseline)
+    f <- input$upload_baseline
+    ext <- tolower(tools::file_ext(f$name))
+    if (ext == "parquet") {
+      baseline_parquet(f$datapath)
+      return(invisible())
+    }
+    process_hds_async(f$datapath, "Processing Baseline...",
+      on_success = function(out_dir) {
+        baseline_parquet(file.path(out_dir, "Heads.parquet"))
+        showNotification("Baseline heads extracted from .hds.", type = "message")
+      },
+      on_fail = function() baseline_parquet(NULL))
+  })
+
+  hds2_path <- reactive({
+    baseline_parquet()
+  })
+
   time_path <- reactive({
+    if (!is.null(scenario_times())) return(scenario_times())
     req(nrow(uploaded_files()) > 0)
     files <- uploaded_files()
     idx <- grep("Times\\.csv$", files$name, ignore.case = TRUE)
@@ -498,6 +737,12 @@ server <- function(input, output, session) {
       error = function(e) 1
     )
     updateNumericInput(session, "select_layer", max = n_lay)
+    # Clamp the current selection: if the previous model had more layers and the
+    # user was on layer > n_lay, slicing the new (thinner) model would error.
+    cur <- isolate(input$select_layer)
+    if (isTruthy(cur) && cur > n_lay) {
+      updateNumericInput(session, "select_layer", value = 1)
+    }
   })
   
   # Slicing the Heads for the Map
@@ -716,8 +961,15 @@ server <- function(input, output, session) {
       fill_color_arg <- "#3b82f680" # default blue outline when no heads
     }
     
-    # Show row/col when the grid carries them (structured models), else node id.
-    tt <- if (all(c("row", "col") %in% names(render_df))) c("row", "col", "nodenumber") else "nodenumber"
+    # Show row/col only for structured grids (DIS / MODFLOW-2005). USG quadtree
+    # grids carry meaningless base-grid row/col, so suppress them there even
+    # though the columns exist; DISV/DISU grids simply don't have the columns.
+    structured_ok <- !identical(loaded_model_type(), "usg")
+    tt <- if (structured_ok && all(c("row", "col") %in% names(render_df))) {
+      c("row", "col", "nodenumber")
+    } else {
+      "nodenumber"
+    }
     if (has_heads) tt <- c(tt, "h")
     tooltip_vars <- rlang::expr(c(!!!rlang::syms(tt)))
     
@@ -792,6 +1044,7 @@ server <- function(input, output, session) {
   })
   
   # Recenter the camera on the model extent.
+  focus_tick <- reactiveVal(0)
   observeEvent(input$focus_model, {
     req(grid_outline())
     bbox <- st_bbox(grid_outline())
@@ -801,6 +1054,14 @@ server <- function(input, output, session) {
     if ((bbox["ymax"] - bbox["ymin"]) < 1e-4) {
       bbox["ymax"] <- bbox["ymax"] + 1e-4; bbox["ymin"] <- bbox["ymin"] - 1e-4
     }
+    # deck.gl ignores an unchanged `initial_bounds`, so a second click never
+    # re-fits. Alternate a sub-metre nudge (~0.1 m) each click so the value
+    # always differs from the previous fit and the camera re-centres every time.
+    tick <- focus_tick() + 1
+    focus_tick(tick)
+    nudge <- if (tick %% 2 == 0) 1e-6 else -1e-6
+    bbox["xmax"] <- bbox["xmax"] + nudge
+    bbox["ymax"] <- bbox["ymax"] + nudge
     rdeck_proxy("my_rdeck", initial_bounds = bbox)
   })
 

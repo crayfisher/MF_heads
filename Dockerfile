@@ -12,6 +12,11 @@ RUN micromamba install -y -n base -f /tmp/environment.yml && \
 COPY --chown=$MAMBA_USER:$MAMBA_USER . /app
 WORKDIR /app
 
+# Model processing runs in the already-active `base` env (no `conda` binary here),
+# so the app calls python/Rscript directly instead of `conda run`.
+ENV RGW_CONDA_ENV=base
+ENV RGW_CONDA_RUN=""
+
 # Expose the standard Shiny port
 EXPOSE 3838
 

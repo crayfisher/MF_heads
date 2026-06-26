@@ -335,9 +335,62 @@ def parse_usg(hds_file, out_dir):
     print("Saved Times.csv")
 
 
+def parse_heads_only(hds_file, out_dir, usg=False):
+    """Extract heads + times from a bare .hds (no grid). Used to swap a different
+    *scenario* or *baseline* run onto an already-loaded grid, so only
+    (SP, layer, nodenumberL1, h) plus the timeline are needed to join.
+
+    Supports standard HeadFile (MF6/MF2005 DIS/DISV) and USG HeadUFile. DISU
+    output (flat global nodes, no layering info) is not split here.
+    """
+    os.makedirs(out_dir, exist_ok=True)
+    print(f"Extracting heads from {hds_file} (usg={usg})...")
+    h_records = []
+    if usg:
+        hdobj = bf.HeadUFile(hds_file)
+        kstpkper = hdobj.get_kstpkper()
+        times = hdobj.get_times()
+        nlay = hdobj.nlay
+        for idx, (kstp, kper) in enumerate(kstpkper):
+            sp = idx + 1
+            for lay_idx in range(nlay):
+                lay_heads = hdobj.get_data(kstpkper=(kstp, kper), mflay=lay_idx).flatten()
+                h_records.append(pd.DataFrame({
+                    'SP': sp, 'layer': lay_idx + 1,
+                    'nodenumberL1': np.arange(1, len(lay_heads) + 1), 'h': lay_heads}))
+    else:
+        hdobj = bf.HeadFile(hds_file)
+        kstpkper = hdobj.get_kstpkper()
+        times = hdobj.get_times()
+        for idx, (kstp, kper) in enumerate(kstpkper):
+            sp = idx + 1
+            heads = hdobj.get_data(kstpkper=(kstp, kper))
+            n_lay = heads.shape[0]
+            for lay_idx in range(n_lay):
+                lay_heads = heads[lay_idx].flatten()
+                h_records.append(pd.DataFrame({
+                    'SP': sp, 'layer': lay_idx + 1,
+                    'nodenumberL1': np.arange(1, len(lay_heads) + 1), 'h': lay_heads}))
+
+    heads_df = pd.concat(h_records, ignore_index=True)
+    heads_df['SP'] = heads_df['SP'].astype(np.uint16)
+    heads_df['layer'] = heads_df['layer'].astype(np.uint8)
+    heads_df['nodenumberL1'] = heads_df['nodenumberL1'].astype(np.uint32)
+    heads_df['h'] = heads_df['h'].astype(np.float32)
+    heads_df.to_parquet(os.path.join(out_dir, "Heads.parquet"), compression='snappy')
+    print(f"Saved Heads.parquet ({len(heads_df)} rows)")
+
+    # Also emit the timeline so a scenario .hds brings its own stress periods.
+    kp = np.array(kstpkper)
+    pd.DataFrame({'time': np.array(times), 'kstp': kp[:, 0], 'kper': kp[:, 1],
+                  'SP': np.arange(1, len(times) + 1)}).to_csv(
+        os.path.join(out_dir, "Times.csv"), index=False)
+    print("Saved Times.csv")
+
+
 if __name__ == '__main__':
     if len(sys.argv) < 4:
-        print("Usage: python flopy_parser.py <model_type: mf6|mf2005|usg> <input_path> <out_dir>")
+        print("Usage: python flopy_parser.py <model_type: mf6|mf2005|usg|heads|heads_usg> <input_path> <out_dir>")
         sys.exit(1)
 
     mtype = sys.argv[1].lower()
@@ -350,5 +403,7 @@ if __name__ == '__main__':
         parse_mf2005(in_path, out_dir)
     elif mtype == 'usg':
         parse_usg(in_path, out_dir)
+    elif mtype in ('heads', 'heads_usg'):
+        parse_heads_only(in_path, out_dir, usg=(mtype == 'heads_usg'))
     else:
         print(f"Unknown model type: {mtype}")

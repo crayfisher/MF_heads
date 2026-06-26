@@ -58,8 +58,15 @@ if (dir.exists(input_path)) {
   }
 }
 
-cmd <- sprintf("conda run -n flopy_env python %s %s %s %s", 
-               shQuote(py_script), model_type, shQuote(input_path), shQuote(out_dir))
+# Command prefix mirrors the app: locally shell into the conda env; in Docker the
+# env is already active so RGW_CONDA_RUN="" runs python directly. These env vars
+# are inherited from the parent app process that invoked this script.
+proc_prefix <- Sys.getenv("RGW_CONDA_RUN", unset = NA)
+if (is.na(proc_prefix)) {
+  proc_prefix <- paste("conda run -n", Sys.getenv("RGW_CONDA_ENV", "flopy_env"))
+}
+cmd <- sprintf("%s python %s %s %s %s",
+               proc_prefix, shQuote(py_script), model_type, shQuote(input_path), shQuote(out_dir))
 message("Running Python extraction: ", cmd)
 res <- system(cmd)
 message("Python exit code: ", res)
