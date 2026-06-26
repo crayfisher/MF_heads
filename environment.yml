@@ -16,6 +16,7 @@ dependencies:
   - r-interp
   - r-isoband
   - r-shinymanager
+  - r-scrypt
   - r-dt
   - r-tidyverse
   - r-lubridate

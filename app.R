@@ -73,10 +73,12 @@ if (app_pass == "") {
   app_pass <- "rgw_secret" # Fallback for local testing
 }
 
+# Same method as the RGWchart app: shinymanager with a scrypt-hashed password
+# sourced from the env var (APP_PASSWORD here), so no plaintext is stored.
 credentials <- data.frame(
   user = c("viewer"),
-  password = c(app_pass),
-  admin = c(FALSE),
+  password = c(scrypt::hashPassword(app_pass)),
+  is_hashed_password = TRUE,
   stringsAsFactors = FALSE
 )
 
@@ -222,11 +224,14 @@ ui <- page_sidebar(
   )
 )
 
+# Wrap the UI in the shinymanager login gate (same as RGWchart).
+ui <- secure_app(ui)
+
 server <- function(input, output, session) {
 
-  # res_auth <- secure_server(
-  #   check_credentials = check_credentials(credentials)
-  # )
+  res_auth <- secure_server(
+    check_credentials = check_credentials(credentials)
+  )
 
   # Inactive / dry / no-flow cells. Sentinels vary by model: USG often uses 999,
   # MF6 writes +/-1e30, and MODFLOW-2005 HNOFLO/HDRY can be anything (e.g. 99999).
