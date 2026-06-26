@@ -185,12 +185,12 @@ gives automatic HTTPS and handles Shiny's websockets out of the box:
 
 ```
 # /etc/caddy/Caddyfile
-chart.crayfisher.com { reverse_proxy localhost:3838 }
-heads.crayfisher.com { reverse_proxy localhost:3839 }
+lst.apps.crayfisher.com { reverse_proxy localhost:3838 }
+heads.apps.crayfisher.com { reverse_proxy localhost:3839 }
 ```
 
-Then both are reachable as clean `https://chart.crayfisher.com` /
-`https://heads.crayfisher.com` with no port numbers. See §1b for when to graduate
+Then both are reachable as clean `https://lst.apps.crayfisher.com` /
+`https://heads.apps.crayfisher.com` with no port numbers. See §1b for when to graduate
 to a shared base image or ShinyProxy (per-user isolation/scaling) — both can wait
 until you have multiple concurrent users.
 

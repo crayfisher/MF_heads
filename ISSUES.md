@@ -55,6 +55,28 @@ destabilising the working build.
   bundled baseline parquet as the scenario (scenario == baseline). Now excludes
   `grid|qtgrid|baseline` and prefers the exact `Heads.parquet`.
 
+## Post-deploy feedback 2026-06-26 (reported after local test, to fix next)
+- [ ] **Start-date/time offset persists across model loads.** After loading a
+  demo then a new model (USG), the time offset from the first model is preserved.
+  Reset `start_date` (and any time baseline) when a new base model loads, the
+  same way layers/scenario/baseline are now reset in `apply_processed_model`.
+- [ ] **Drawdown hydrograph y-axis should be reversed.** When `data_display ==
+  "Drawdown"`, invert the chart y-axis (drawdown increases downward).
+- [ ] **Color scale direction inconsistent between models.** The test/demo model
+  renders low=red / high=blue, opposite to the USG-T model, even though the
+  "Reverse Color Ramp" box is ticked in both (unticking flips it). The default
+  ramp direction should be consistent regardless of model — pin the palette to
+  data semantics (e.g. low=blue/high=red for heads) rather than relying on the
+  toggle landing differently per dataset.
+- [ ] **Clearer labels.** Use domain terms instead of generic ones, e.g. "Heads"
+  rather than "polygons" in the layer/legend/labels.
+
+## Content / onboarding
+- [ ] **Landing page.** Add an intro page (general concepts + instructions) shown
+  before/alongside the map — candidate first tab of a future `page_navbar`.
+- [ ] **HPM model reference.** Add attribution for the HPM demo model (author +
+  link) in the UI (e.g. on the landing page or an About/info popover).
+
 ## Known limitations / follow-ups
 - [ ] **HPM null run convergence.** Removing WEL left 46/420 stress periods not
   fully GMG-converged. Fine for a demo baseline; regenerate from a properly
