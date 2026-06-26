@@ -23,6 +23,10 @@ dependencies:
   - r-lubridate
   - r-sfarrow
   - r-remotes
+  # Async background processing (future_promise) so heavy ZIP/HDS extraction
+  # doesn't block the Shiny event loop / disconnect the browser.
+  - r-future
+  - r-promises
   # Python + flopy power model processing (ZIP extraction, .hds -> parquet) so
   # ZIP upload and scenario/baseline .hds loading work inside the container.
   # Note: this enables *reading* model output. Running models (null runs,
