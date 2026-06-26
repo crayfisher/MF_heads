@@ -95,9 +95,10 @@ repo. It is still shipped to the server *inside the image*, because the Docker
 *   **Therefore: generate `demo/` (below) on the build machine before
     `docker build`.** A bare `git clone` will not contain it.
 
-The image already excludes `scripts/`, `data/` and the raw model files to stay
-lean and avoid running flopy at runtime — the demo only needs the small
-parquet/csv outputs, so it behaves identically in the container and locally.
+The image excludes `data/` and the raw model files (31 GB) to stay lean, but
+**does** include `scripts/` + flopy so ZIP/`.hds` processing works in-container
+(see the processing note below). The demo itself only needs the small parquet/csv
+outputs, so it behaves identically in the container and locally.
 
 ### Size / time resolution
 
@@ -128,6 +129,34 @@ conda run -n flopy_env python scripts/make_null_run.py data/HPM HPM_M3.nam HPM_n
 conda run -n flopy_env python scripts/make_demo.py --out demo/hpm \
     --grid data/HPM.zip --model-type mf2005 \
     --heads data/HPM/HPM_M3.hds --baseline data/HPM/HPM_null.hds --frames 60
+```
+
+### Transferring the demo to a remote server
+
+`demo/` is gitignored, so `git clone`/`pull` will **not** bring it to the server.
+Copy it separately into the **same project folder** (so it lands at `<repo>/demo/`)
+**before** `docker build` — the build context, not git, carries it. You only
+re-transfer when the demo changes, not on every deploy.
+
+```bash
+# Option A - rsync (resumable, no zip step). Run from the project root locally:
+rsync -avz --progress demo/ user@server:~/apps/RGWheads_oct-quad/demo/
+
+# Option B - tar + scp:
+tar czf demo.tar.gz demo/
+scp demo.tar.gz user@server:~/apps/RGWheads_oct-quad/
+ssh user@server 'cd ~/apps/RGWheads_oct-quad && tar xzf demo.tar.gz && rm demo.tar.gz'
+```
+
+The parquet is already zstd-compressed, so gzip/zip barely shrinks it (~191 MB
+either way). Full server flow:
+
+```bash
+git pull                                          # code (no demo)
+rsync -avz demo/ server:~/apps/RGWheads_oct-quad/demo/   # one-time / on demo change
+docker build -t rgw_heads_app .                   # build context includes demo/
+docker run -d --restart unless-stopped --name rgw_heads \
+  -p 3839:3838 -e APP_PASSWORD="<real-pw>" rgw_heads_app
 ```
 
 > **Full processing in the container:** ZIP upload and scenario/baseline `.hds`
