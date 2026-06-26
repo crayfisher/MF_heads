@@ -1,7 +1,12 @@
 library(shiny)
 library(plotly)
 library(DT)
-library(tidyverse)
+# Use the specific tidyverse packages the app needs rather than the full
+# meta-package - keeps the Docker image lean and avoids the flaky
+# googledrive/gargle/billboarder downloads tidyverse pulls in.
+library(dplyr)
+library(readr)
+library(ggplot2)
 library(lubridate)
 library(rdeck)
 library(sf)
