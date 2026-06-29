@@ -42,33 +42,72 @@ CONDA_ENV <- Sys.getenv("RGW_CONDA_ENV", "flopy_env")
 PROC_PREFIX <- Sys.getenv("RGW_CONDA_RUN", paste("conda run -n", CONDA_ENV))
 message("[Startup] CONDA_ENV = ", CONDA_ENV, " | PROC_PREFIX = '", PROC_PREFIX, "'")
 
-# Define custom premium theme using bslib
+# --- Shared visual identity (keep in sync with ../RGWchart) ------------------
+# Both RGW apps use the SAME vapor base + palette + CSS so they are (a) vivid,
+# matching the Crayfisher website's "vapor" theme, and (b) identical to each
+# other. The website is Quarto `theme: vapor` with these same teal/neon accents,
+# so the apps now read as part of the same family.
+CF_PRIMARY   <- "#00bc8c" # teal-green (site h1/h2 + buttons)
+CF_ACCENT    <- "#32fbe2" # neon-teal (hover / highlight)
+CF_SECONDARY <- "#6f42c1" # vapor purple
+CF_BG        <- "#1a0933" # deep purple page background (vapor)
+CF_PANEL     <- "#241046" # card / plot panel
+CF_FG        <- "#ece7f7" # light lavender text
+CF_MUTED     <- "#a99fce" # muted lavender (secondary text)
 app_theme <- bs_theme(
-  bootswatch = "darkly",
-  primary = "#10b981", # Emerald
-  secondary = "#475569", # Slate
-  success = "#10b981",
-  info = "#0ea5e9", # Sky blue
+  bootswatch = "vapor",
+  primary = CF_PRIMARY,
+  secondary = CF_SECONDARY,
+  success = CF_PRIMARY,
+  info = CF_ACCENT,
   base_font = font_google("Inter"),
   heading_font = font_google("Outfit"),
-  bg = "#0f172a", # Dark slate background
-  fg = "#f8fafc" # Light grey text
+  bg = CF_BG,
+  fg = CF_FG
 )
 
-# Custom CSS for modern design accents
+# Custom CSS for the vivid, glowing look (matches the website's neon accents).
+# Literal hex values here mirror the CF_* constants above; keep them aligned.
 custom_css <- "
-  .navbar { border-bottom: 1px solid #1e293b !important; }
+  body { background: radial-gradient(circle at 20% 0%, #2a0f52 0%, #1a0933 55%) !important; }
+  /* bslib's page-sidebar title bar derives its background + text colour from
+     these two CSS vars; vapor sets them to pink bg / dark text. Pin both to the
+     dark palette so the top bar is dark navy with readable teal text. */
+  :root { --bslib-page-sidebar-title-bg: #150726 !important; --bslib-page-sidebar-title-color: #00bc8c !important; }
+  .navbar, .bslib-page-sidebar > .navbar { background-color: #150726 !important; background-image: none !important; color: #00bc8c !important; border-bottom: 1px solid rgba(50,251,226,0.18) !important; box-shadow: none !important; position: relative; }
+  .navbar .bslib-page-title { color: #00bc8c !important; font-weight: 700; }
+  .navbar-brand { color: #00bc8c !important; font-weight: 700 !important; letter-spacing: 0.3px; text-shadow: 0 0 12px rgba(0,188,140,0.45); }
+  /* Back-to-site link pinned to the right of the top bar; explicit bright colour
+     so it's readable at rest (outline-info rendered too dark on the dark bar). */
+  .app-back-btn { position: absolute !important; right: 16px; top: 50%; transform: translateY(-50%); z-index: 5; color: #32fbe2 !important; border-color: #32fbe2 !important; background: rgba(50,251,226,0.08) !important; }
+  .app-back-btn:hover { background: #32fbe2 !important; color: #150726 !important; box-shadow: 0 0 14px rgba(50,251,226,0.5) !important; }
+  h1, h2, h3, h4 { color: #00bc8c; }
   .card {
-    border: 1px solid #1e293b !important;
-    background-color: #1e293b !important;
-    border-radius: 12px !important;
-    box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1) !important;
+    background: #241046 !important;
+    border: 1px solid rgba(255,255,255,0.08) !important;
+    border-radius: 14px !important;
+    box-shadow: 0 8px 26px rgba(0,0,0,0.4) !important;
+    transition: border-color 0.3s ease, box-shadow 0.3s ease;
   }
-  .card-header { border-bottom: 1px solid #334155 !important; font-weight: 600 !important; }
-  .sidebar { background-color: #0f172a !important; border-right: 1px solid #1e293b !important; }
-  .accordion-button { background-color: #1e293b !important; color: #f8fafc !important; }
-  .accordion-button:not(.collapsed) { background-color: #334155 !important; color: #10b981 !important; }
-  .value-box { border-radius: 12px !important; border: 1px solid #1e293b !important; }
+  .card:hover { border-color: #32fbe2 !important; box-shadow: 0 14px 30px rgba(50,251,226,0.18) !important; }
+  .card-header { background: rgba(0,0,0,0.25) !important; border-bottom: 1px solid rgba(255,255,255,0.08) !important; color: #00bc8c !important; font-weight: 600 !important; }
+  .sidebar { background: #150726 !important; border-right: 1px solid rgba(50,251,226,0.12) !important; }
+  .accordion-button { background: #241046 !important; color: #ece7f7 !important; }
+  .accordion-button:not(.collapsed) { background: #2d1657 !important; color: #00bc8c !important; box-shadow: inset 3px 0 0 #00bc8c; }
+  .value-box { border-radius: 14px !important; border: 1px solid rgba(255,255,255,0.08) !important; }
+  /* Buttons: pill shape + neon hover glow, matching the website cards. */
+  .btn { border-radius: 30px !important; font-weight: 600 !important; transition: all 0.2s ease; }
+  .btn-primary, .btn-success { background: #00bc8c !important; border: 1px solid #00bc8c !important; color: #04130e !important; }
+  .btn-primary:hover, .btn-success:hover, .btn-info:hover { box-shadow: 0 0 16px rgba(0,188,140,0.55) !important; transform: translateY(-1px); }
+  .btn-info { color: #04130e !important; }
+  .btn-secondary { color: #ece7f7 !important; }
+  /* Outline buttons (e.g. Remove): keep text visible on the dark bg, not only on hover. */
+  .btn-danger { color: #fff !important; }
+  .btn-outline-danger { color: #ff7088 !important; border-color: #ff7088 !important; }
+  .btn-outline-danger:hover { background: #ff7088 !important; color: #1a0933 !important; }
+  .form-control, .form-select, .selectize-input, .selectize-dropdown { background: rgba(0,0,0,0.25) !important; border-color: rgba(255,255,255,0.12) !important; color: #ece7f7 !important; }
+  a { color: #00bc8c; }
+  a:hover { color: #32fbe2; }
 "
 
 # Secure credentials using environment variables
@@ -88,17 +127,21 @@ credentials <- data.frame(
 )
 
 ui <- page_sidebar(
-  title = "RGW Heads Visualizer (WebGL)",
-  theme = app_theme,
-  header = tags$head(
-    tags$style(HTML(custom_css))
+  title = tagList(
+    "RGW Heads Visualizer (WebGL)",
+    tags$a("← crayfisher.com", href = "https://crayfisher.com",
+           class = "btn btn-outline-info btn-sm app-back-btn")
   ),
+  # Compile the custom CSS into the theme so it reliably lands in <head>.
+  # (page_sidebar has no `header` arg; passing tags$head via ... rendered a
+  # <head> inside <body>, which browsers discard — so the CSS never loaded.)
+  theme = bs_add_rules(app_theme, custom_css),
   sidebar = sidebar(
     title = "Controls & Parameters",
-    bg = "#0f172a",
+    bg = "#150726",
     width = 350,
     div(
-      style = "font-size: 0.85rem; background-color: #1e293b; padding: 10px; border-radius: 5px; margin-bottom: 15px; border: 1px solid #334155; line-height: 1.5;",
+      style = "font-size: 0.85rem; background-color: #241046; padding: 10px; border-radius: 5px; margin-bottom: 15px; border: 1px solid rgba(255,255,255,0.12); line-height: 1.5;",
       div(strong(icon("layer-group"), " Slice: "), textOutput("slice_text", inline = TRUE)),
       div(strong(icon("map-pin"), " Node: "), textOutput("node_text", inline = TRUE))
     ),
@@ -117,7 +160,7 @@ ui <- page_sidebar(
             )
         ),
         uiOutput("georef_help"),
-        hr(style = "border-top: 1px solid #334155; margin: 10px 0;"),
+        hr(style = "border-top: 1px solid rgba(255,255,255,0.12); margin: 10px 0;"),
         div(style = "display: flex; align-items: center; gap: 10px;",
             fileInput("upload_files", "Or Manual Parquet Upload (Grid, Heads, Times)",
                       accept = c(".parquet", ".csv"), multiple = TRUE, buttonLabel = "Browse..."),
@@ -126,10 +169,10 @@ ui <- page_sidebar(
               uiOutput("manual_help")
             )
         ),
-        div(style = "font-size: 0.78rem; color: #94a3b8; margin: -8px 0 8px;",
+        div(style = "font-size: 0.78rem; color: #a99fce; margin: -8px 0 8px;",
             "Works for ", strong("any"), " model type — it loads already-processed ",
             "parquet/CSV outputs and is grid-type agnostic (not USG-only)."),
-        hr(style = "border-top: 1px solid #334155; margin: 10px 0;"),
+        hr(style = "border-top: 1px solid rgba(255,255,255,0.12); margin: 10px 0;"),
         div(strong(icon("retweet"), " Swap Scenario (keeps current grid)"),
             style = "font-size: 0.9rem; margin-bottom: 6px;"),
         div(style = "display: flex; align-items: center; gap: 10px;",
@@ -142,7 +185,7 @@ ui <- page_sidebar(
         ),
         fileInput("upload_baseline", "Optional: Baseline Heads (.parquet/.hds) for Drawdown",
                   accept = c(".parquet", ".hds"), multiple = FALSE, buttonLabel = "Browse..."),
-        hr(style = "border-top: 1px solid #334155; margin: 10px 0;"),
+        hr(style = "border-top: 1px solid rgba(255,255,255,0.12); margin: 10px 0;"),
         # Bundled demo / test data - loads instantly (pre-processed parquet), no
         # upload or model-processing needed. Handy for demonstrations.
         uiOutput("demo_ui")
@@ -163,7 +206,7 @@ ui <- page_sidebar(
         icon = icon("calendar-alt"),
         uiOutput("crs_status"),
         dateInput("start_date", "Model Start Date:", value = "2019-06-01", weekstart = 1),
-        div(style = "font-size: 0.78rem; color: #94a3b8; margin-top: 4px;",
+        div(style = "font-size: 0.78rem; color: #a99fce; margin-top: 4px;",
             "Start date auto-fills from the model's reference info when available; adjust freely.")
       ),
       accordion_panel(
@@ -189,12 +232,15 @@ ui <- page_sidebar(
         radioButtons("render_style", "Map Style:", choices = c("Color Flood", "Contours", "Both"), selected = "Color Flood", inline = TRUE),
         checkboxInput("show_basemap", "Show Satellite Basemap", value = TRUE),
         checkboxInput("exclude_999", "Exclude Inactive/Dry Cells (999 or 1e30)", value = TRUE),
-        checkboxInput("rev_colors", "Reverse Color Ramp", value = TRUE),
+        # Default OFF so the ramp is pinned to data semantics consistently for
+        # every model: turbo runs blue->red and domain_pal() is always
+        # (min, max) ascending, giving low=blue / high=red. Toggle to flip.
+        checkboxInput("rev_colors", "Reverse Color Ramp", value = FALSE),
         radioButtons("color_mode", "Color Scale Type:", choices = c("Discrete Bins", "Continuous"), selected = "Discrete Bins"),
         checkboxInput("lim_val", "Apply Custom Color Limits (Hide OOB)", value = FALSE),
         numericInput("min_val", "Color Min Value:", value = NA),
         numericInput("max_val", "Color Max Value:", value = NA),
-        sliderInput("opacity", "Polygon Opacity:", min = 0, max = 1, value = 0.8, step = 0.1)
+        sliderInput("opacity", "Cell Fill Opacity:", min = 0, max = 1, value = 0.8, step = 0.1)
       )
     )
   ),
@@ -206,7 +252,7 @@ ui <- page_sidebar(
       full_screen = TRUE,
       card_header(
         class = "d-flex justify-content-between align-items-center",
-        "WebGL Head Distribution Map",
+        textOutput("map_title", inline = TRUE),
         div(class = "d-flex align-items-center", style = "gap: 10px;",
           actionButton("focus_model", "Focus on Model", icon = icon("crosshairs"),
                        class = "btn-secondary btn-sm"),
@@ -229,14 +275,74 @@ ui <- page_sidebar(
   )
 )
 
-# Wrap the UI in the shinymanager login gate (same as RGWchart).
-ui <- secure_app(ui)
+# --- Login gate (disabled) --------------------------------------------------
+# Login is intentionally disabled to make the app publicly accessible (linked
+# from the Crayfisher website). To re-enable the shinymanager gate, uncomment
+# the line below and the matching `secure_server(...)` block in `server`.
+# ui <- secure_app(ui)
 
 server <- function(input, output, session) {
 
-  res_auth <- secure_server(
-    check_credentials = check_credentials(credentials)
-  )
+  # res_auth <- secure_server(
+  #   check_credentials = check_credentials(credentials)
+  # )
+
+  # --- Upload validation ----------------------------------------------------
+  # The `accept=` on fileInput is a client-side hint only; a crafted request can
+  # still POST any file. Since uploads feed a heavy flopy/MODFLOW pipeline (and
+  # the app is now public), validate every upload server-side by extension AND,
+  # where the format has a reliable signature, by magic bytes before processing.
+  ext_of <- function(name) tolower(tools::file_ext(name))
+
+  # ZIP local-file/central/empty/spanned headers all start with "PK" + one of
+  # 0x03/0x05/0x07.
+  is_zip_file <- function(path) {
+    con <- file(path, "rb"); on.exit(close(con))
+    sig <- readBin(con, "raw", n = 4)
+    length(sig) == 4 && sig[1] == as.raw(0x50) && sig[2] == as.raw(0x4b) &&
+      sig[3] %in% as.raw(c(0x03, 0x05, 0x07))
+  }
+  # Parquet files begin and end with the 4-byte magic "PAR1".
+  is_parquet_file <- function(path) {
+    sz <- file.info(path)$size
+    if (is.na(sz) || sz < 8) return(FALSE)
+    con <- file(path, "rb"); on.exit(close(con))
+    head4 <- readBin(con, "raw", n = 4)
+    seek(con, where = sz - 4, origin = "start")
+    tail4 <- readBin(con, "raw", n = 4)
+    identical(rawToChar(head4), "PAR1") && identical(rawToChar(tail4), "PAR1")
+  }
+  # .hds / .csv have no portable signature - extension + non-empty is the
+  # practical guard; the parser/reader rejects malformed content downstream.
+  validate_upload <- function(df, allowed,
+                              magic = c("none", "zip", "parquet")) {
+    magic <- match.arg(magic)
+    if (is.null(df) || nrow(df) == 0) return(FALSE)
+    bad_ext <- df$name[!(ext_of(df$name) %in% tolower(allowed))]
+    if (length(bad_ext) > 0) {
+      showNotification(
+        sprintf("Rejected: %s. Allowed types: %s.",
+                paste(bad_ext, collapse = ", "), paste(allowed, collapse = ", ")),
+        type = "error")
+      return(FALSE)
+    }
+    if (any(is.na(df$size) | df$size <= 0)) {
+      showNotification("Rejected: empty file.", type = "error")
+      return(FALSE)
+    }
+    checker <- switch(magic, zip = is_zip_file, parquet = is_parquet_file, NULL)
+    if (!is.null(checker)) {
+      ok <- vapply(df$datapath, checker, logical(1))
+      if (!all(ok)) {
+        showNotification(
+          sprintf("Rejected: %s - content does not match a valid %s file.",
+                  paste(df$name[!ok], collapse = ", "), magic),
+          type = "error")
+        return(FALSE)
+      }
+    }
+    TRUE
+  }
 
   # Inactive / dry / no-flow cells. Sentinels vary by model: USG often uses 999,
   # MF6 writes +/-1e30, and MODFLOW-2005 HNOFLO/HDRY can be anything (e.g. 99999).
@@ -331,14 +437,14 @@ server <- function(input, output, session) {
         tags$li(tags$code(".parquet"), " — a pre-processed Heads.parquet (",
                 tags$code("SP, layer, nodenumberL1, h"), "), used directly.")
       ),
-      div(style = "margin-top:4px; color:#94a3b8;",
+      div(style = "margin-top:4px; color:#a99fce;",
           "Must share the loaded grid's node numbering. Load a new model to reset.")
     )
   })
 
   # Georeferencing instructions + example sidecar, shown under the ZIP input.
   output$georef_help <- renderUI({
-    box_style <- "font-size: 0.78rem; color: #94a3b8; background:#0f172a; padding:8px; border-radius:6px; border:1px solid #334155;"
+    box_style <- "font-size: 0.78rem; color: #a99fce; background:#150726; padding:8px; border-radius:6px; border:1px solid rgba(255,255,255,0.12);"
     mt <- input$model_type %||% "mf6"
     if (mt == "mf2005") {
       div(style = box_style,
@@ -373,7 +479,7 @@ server <- function(input, output, session) {
       div(style = "font-size: 0.82rem; color:#f59e0b; margin-bottom:6px;",
           icon("triangle-exclamation"), " Unreferenced (no CRS) – basemap off.")
     } else {
-      div(style = "font-size: 0.82rem; color:#10b981; margin-bottom:6px;",
+      div(style = "font-size: 0.82rem; color:#00bc8c; margin-bottom:6px;",
           icon("location-dot"), sprintf(" Georeferenced: EPSG:%s.", cu))
     }
   })
@@ -381,23 +487,23 @@ server <- function(input, output, session) {
   # Status indicators
   output$status_grd <- renderUI({
     if (is.null(grid_path())) span(icon("times-circle"), " Grid missing", style="color:#ef4444")
-    else span(icon("check-circle"), " Grid loaded", style="color:#10b981")
+    else span(icon("check-circle"), " Grid loaded", style="color:#00bc8c")
   })
   output$status_hds <- renderUI({
     if (is.null(hds_path())) span(icon("times-circle"), " Heads missing", style="color:#ef4444")
-    else span(icon("check-circle"), " Heads loaded", style="color:#10b981")
+    else span(icon("check-circle"), " Heads loaded", style="color:#00bc8c")
   })
   output$status_scenario <- renderUI({
-    if (is.null(scenario_heads())) span(icon("circle"), " Base heads (no scenario override)", style="color:#94a3b8")
+    if (is.null(scenario_heads())) span(icon("circle"), " Base heads (no scenario override)", style="color:#a99fce")
     else span(icon("retweet"), " Scenario override active", style="color:#0ea5e9")
   })
   output$status_baseline <- renderUI({
-    if (is.null(hds2_path())) span(icon("info-circle"), " No Baseline (Drawdown disabled)", style="color:#94a3b8")
-    else span(icon("check-circle"), " Baseline loaded", style="color:#10b981")
+    if (is.null(hds2_path())) span(icon("info-circle"), " No Baseline (Drawdown disabled)", style="color:#a99fce")
+    else span(icon("check-circle"), " Baseline loaded", style="color:#00bc8c")
   })
   output$status_time <- renderUI({
     if (is.null(time_path())) span(icon("times-circle"), " Times missing", style="color:#ef4444")
-    else span(icon("check-circle"), " Times loaded", style="color:#10b981")
+    else span(icon("check-circle"), " Times loaded", style="color:#00bc8c")
   })
   
   # Accumulate uploaded files so sequential drag-and-drops don't overwrite each other
@@ -405,6 +511,10 @@ server <- function(input, output, session) {
   
   observeEvent(input$upload_files, {
     new_files <- input$upload_files
+    # Server-side type check (extension for all; parquet magic for parquet ones).
+    if (!validate_upload(new_files, allowed = c("parquet", "csv"))) return()
+    pq <- new_files[ext_of(new_files$name) == "parquet", , drop = FALSE]
+    if (nrow(pq) > 0 && !validate_upload(pq, allowed = "parquet", magic = "parquet")) return()
     current_files <- uploaded_files()
     
     # Remove older files with the same name if re-uploaded
@@ -460,6 +570,11 @@ server <- function(input, output, session) {
       tryCatch(as.Date(substr(sd, 1, 10)), error = function(e) NA) else NA
     if (!is.na(sd_date)) {
       updateDateInput(session, "start_date", value = sd_date)
+    } else {
+      # No reference date in the new model: reset to the app default rather than
+      # silently carrying over the previous model's start date (otherwise the
+      # timeline of a model with no start_date is offset by the last one's).
+      updateDateInput(session, "start_date", value = as.Date("2019-06-01"))
     }
 
     removeModal()
@@ -494,7 +609,7 @@ server <- function(input, output, session) {
         actionButton("load_demo", "Load", icon = icon("play"),
                      class = "btn-info btn-sm", style = "margin-bottom: 0;")
       ),
-      div(style = "font-size: 0.78rem; color: #94a3b8;",
+      div(style = "font-size: 0.78rem; color: #a99fce;",
           "Pre-processed sample model for demonstration - loads instantly.")
     )
   })
@@ -521,6 +636,7 @@ server <- function(input, output, session) {
 
   observeEvent(input$upload_zip, {
     req(input$upload_zip)
+    if (!validate_upload(input$upload_zip, allowed = "zip", magic = "zip")) return()
 
     showModal(modalDialog(
       title = "Processing Archive...",
@@ -627,8 +743,10 @@ server <- function(input, output, session) {
   observeEvent(input$upload_scenario, {
     req(input$upload_scenario)
     f <- input$upload_scenario
-    ext <- tolower(tools::file_ext(f$name))
+    if (!validate_upload(f, allowed = c("hds", "parquet"))) return()
+    ext <- ext_of(f$name)
     if (ext == "parquet") {
+      if (!validate_upload(f, allowed = "parquet", magic = "parquet")) return()
       scenario_heads(f$datapath)
       scenario_times(NULL)  # parquet scenario keeps the base timeline
       showNotification("Scenario heads loaded (parquet).", type = "message")
@@ -650,8 +768,10 @@ server <- function(input, output, session) {
   observeEvent(input$upload_baseline, {
     req(input$upload_baseline)
     f <- input$upload_baseline
-    ext <- tolower(tools::file_ext(f$name))
+    if (!validate_upload(f, allowed = c("parquet", "hds"))) return()
+    ext <- ext_of(f$name)
     if (ext == "parquet") {
+      if (!validate_upload(f, allowed = "parquet", magic = "parquet")) return()
       baseline_parquet(f$datapath)
       return(invisible())
     }
@@ -1142,6 +1262,16 @@ server <- function(input, output, session) {
       left_join(time_df(), by = "SP")
   })
   
+  # Map card title reflects what is being shown (Heads vs Drawdown) using
+  # domain terms rather than a generic "head distribution" label.
+  output$map_title <- renderText({
+    if (identical(input$data_display, "Drawdown")) {
+      "Drawdown Distribution Map"
+    } else {
+      "Groundwater Head Distribution Map"
+    }
+  })
+
   # Plotly Chart
   output$chart <- renderPlotly({
     req(node_hydr())
@@ -1150,30 +1280,35 @@ server <- function(input, output, session) {
     lbls <- c("time" = "Time (Days)", "SP" = "Stress Period", "date" = "Calendar Date")
     
     p <- ggplot(node_hydr(), aes(x = .data[[time_col]], y = h)) +
-      geom_line(linewidth = 1, color = "#10b981") +
-      geom_point(size = 2, color = "#10b981", alpha = 0.7) +
+      geom_line(linewidth = 1, color = "#00bc8c") +
+      geom_point(size = 2, color = "#00bc8c", alpha = 0.7) +
       labs(
         title = paste(if(input$data_display == "Drawdown") "Drawdown Hydrograph for Node #" else "Hydrograph for Node #", input$nodenumber),
         x = lbls[time_col],
-        y = if(input$data_display == "Drawdown") "Drawdown (m)" else "Head"
+        y = if(input$data_display == "Drawdown") "Drawdown (m)" else "Head (m)"
       ) +
       theme_minimal(base_family = "Inter") +
       theme(
-        plot.title = element_text(face = "bold", color = "white"),
-        axis.title = element_text(face = "bold", color = "white"),
-        axis.text = element_text(color = "gray"),
-        panel.grid.major = element_line(color = "#334155"),
+        plot.title = element_text(face = "bold", color = "#ece7f7"),
+        axis.title = element_text(face = "bold", color = "#ece7f7"),
+        axis.text = element_text(color = "#a99fce"),
+        panel.grid.major = element_line(color = "#3a2560"),
         panel.grid.minor = element_blank(),
-        plot.background = element_rect(fill = "#1e293b", color = NA),
-        panel.background = element_rect(fill = "#1e293b", color = NA)
+        plot.background = element_rect(fill = "#241046", color = NA),
+        panel.background = element_rect(fill = "#241046", color = NA)
       )
-      
-    ggplotly(p, dynamicTicks = TRUE) %>%
+
+    gp <- ggplotly(p, dynamicTicks = TRUE) %>%
       layout(
-        plot_bgcolor = "#1e293b",
-        paper_bgcolor = "#1e293b",
-        font = list(color = "white")
+        plot_bgcolor = "#241046",
+        paper_bgcolor = "#241046",
+        font = list(color = "#ece7f7")
       )
+    # Drawdown increases downward, so invert the y-axis when displaying it.
+    if (input$data_display == "Drawdown") {
+      gp <- gp %>% layout(yaxis = list(autorange = "reversed"))
+    }
+    gp
   })
 }
 

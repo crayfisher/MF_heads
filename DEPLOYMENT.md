@@ -214,14 +214,31 @@ gives automatic HTTPS and handles Shiny's websockets out of the box:
 
 ```
 # /etc/caddy/Caddyfile
-lst.apps.crayfisher.com { reverse_proxy localhost:3838 }
-heads.apps.crayfisher.com { reverse_proxy localhost:3839 }
+lst.crayfisher.com   { reverse_proxy localhost:3838 }
+heads.crayfisher.com { reverse_proxy localhost:3839 }
 ```
 
-Then both are reachable as clean `https://lst.apps.crayfisher.com` /
-`https://heads.apps.crayfisher.com` with no port numbers. See §1b for when to graduate
+Then both are reachable as clean `https://lst.crayfisher.com` /
+`https://heads.crayfisher.com` with no port numbers. See §1b for when to graduate
 to a shared base image or ShinyProxy (per-user isolation/scaling) — both can wait
 until you have multiple concurrent users.
+
+> **Subdomain note (single-level on purpose).** Use `heads.crayfisher.com` /
+> `lst.crayfisher.com`, NOT nested `*.apps.crayfisher.com`. Cloudflare's free
+> Universal SSL only covers the apex + one wildcard level (`*.crayfisher.com`),
+> so a third-level host like `heads.apps.crayfisher.com` would fail TLS through
+> the Cloudflare proxy (would need paid Advanced Certificate Manager).
+
+**Cloudflare (edge bot/abuse protection).** Login is disabled on both apps, so
+they sit behind Cloudflare's free tier instead of an in-app gate:
+1. Add `crayfisher.com` to Cloudflare; switch nameservers at the registrar.
+2. DNS: add **proxied (orange-cloud)** A records `heads` and `lst` → server IP.
+3. SSL/TLS mode = **Full (strict)** (Caddy holds valid origin certs).
+4. Security → Bots → enable **Bot Fight Mode**; optionally add a WAF rate-limit
+   rule. Leave Turnstile off unless real abuse appears.
+5. Keep **WebSockets** enabled (Network tab) — Shiny needs them.
+Optionally trust Cloudflare's forwarded IPs in Caddy so logs/rate-limits see the
+real client IP (`trusted_proxies`/`X-Forwarded-For`).
 
 ## 7. Local test deploy (verifying this build)
 
