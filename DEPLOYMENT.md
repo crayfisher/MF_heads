@@ -1,6 +1,9 @@
-# Docker Deployment Guide: RGWheads
+# Docker Deployment Guide: RGWheads (+ RGWchart)
 
-This guide covers the architecture, build instructions, and deployment strategies for containerizing the `RGWheads` Shiny Application.
+This guide covers the architecture, build instructions, and deployment strategies
+for the `RGWheads` Shiny application. **§8 is the exact deploy/redeploy command
+reference for both `RGWheads` and `RGWchart`** (the two apps are separate repos,
+images, and containers).
 
 ## 1. Architecture
 
@@ -22,8 +25,8 @@ automation, an AI run-assistant) is better served by separating concerns:
 2.  **Per-app images (build often, cheap).** Each app's `Dockerfile` is
     `FROM rgw-base:latest` + `COPY` of just that app's code and its `demo/` /
     client config. Rebuilds are seconds, and every client app is guaranteed an
-    identical runtime. The app reads its config from env vars (`APP_PASSWORD`,
-    `RGW_CONDA_ENV`, and e.g. a future `RGW_APP_TITLE` / `RGW_DEMO_DIR`).
+    identical runtime. The app reads its config from env vars (`RGW_CONDA_ENV`,
+    and e.g. a future `RGW_APP_TITLE` / `RGW_DEMO_DIR`).
 
 3.  **Separate the "runner" from the "viewer" (longer term).** For hosted models
     with weekly WEL/recharge updates, run a **processing service** (flopy +
@@ -162,9 +165,9 @@ either way). Full server flow:
 git pull                                          # code (no demo)
 rsync -avz demo/ server:~/apps/RGWheads_oct-quad/demo/   # one-time / on demo change
 docker build -t rgw_heads_app .                   # build context includes demo/
-docker run -d --restart unless-stopped --name rgw_heads \
-  -p 3839:3838 -e APP_PASSWORD="<real-pw>" rgw_heads_app
+docker run -d --restart unless-stopped --name rgw_heads -p 3839:3838 rgw_heads_app
 ```
+(See **§8** for the full deploy/redeploy reference for both apps.)
 
 > **Full processing in the container:** ZIP upload and scenario/baseline `.hds`
 > loading run flopy via `scripts/`, which **are** included in the image (flopy is
@@ -185,20 +188,25 @@ docker build -t rgw_heads_app .
 
 ## 5. Running the Container
 
-Once built, launch the container using `docker run`. You must explicitly map port `3838` (the Shiny default) and inject your secure password:
+Once built, launch the container with `docker run`. The app listens on `3838`
+*inside* the container; map it to a host port with `-p HOST:3838`. RGWheads uses
+host port **3839** (RGWchart takes 3838 — see §6). No password is needed (login
+is disabled, §3).
 
-**Foreground Mode (For testing and seeing error logs):**
+**Foreground mode (testing — see logs live):**
 ```bash
-docker run -p 3838:3838 -e APP_PASSWORD="MySuperSecurePassword123" rgw_heads_app
+docker run --rm -p 3839:3838 rgw_heads_app
 ```
 
-**Detached/Daemon Mode (For production deployment):**
+**Detached/daemon mode (production):**
 ```bash
-docker run -d --restart unless-stopped --name rgw_heads \
-  -p 3838:3838 -e APP_PASSWORD="MySuperSecurePassword123" rgw_heads_app
+docker run -d --restart unless-stopped --name rgw_heads -p 3839:3838 rgw_heads_app
 ```
 
-Once running, the application will be accessible at: `http://<your-server-ip>:3838` or `http://localhost:3838`.
+Then it's reachable at `http://<server-ip>:3839` (or `http://localhost:3839`).
+
+> The exact, copy-paste commands for a **first deploy** and a **redeploy** of
+> **both** apps are in **§8** — that is the authoritative command reference.
 
 ## 6. Running alongside another app (e.g. RGWchart)
 
@@ -209,8 +217,7 @@ other app**:
 
 ```bash
 # RGWchart already running on host port 3838
-docker run -d --restart unless-stopped --name rgw_heads \
-  -p 3839:3838 -e APP_PASSWORD="..." rgw_heads_app
+docker run -d --restart unless-stopped --name rgw_heads -p 3839:3838 rgw_heads_app
 ```
 
 RGWheads is then at `http://<server>:3839`, RGWchart stays at `:3838`.
@@ -259,38 +266,96 @@ docker logs -f rgw_heads_test     # watch for processing/runtime errors
 docker stop rgw_heads_test
 ```
 
-## 8. Rebuild & redeploy (after code changes)
+## 8. Deploy & redeploy — exact commands (both apps)
 
-The image **copies `app.R` in at build time**, so any change to the app only
-takes effect after a rebuild + container restart. (The Crayfisher website is
-separate — GitHub Pages serves `docs/` directly, so a `git push` is its whole
-"deploy"; it is not Docker.)
+This is the authoritative command reference. The two apps are **separate repos /
+images / containers**:
 
-On the server:
+| App      | Repo dir (server)            | Image           | Container   | Host→ctr port | App file in image            |
+|----------|------------------------------|-----------------|-------------|---------------|------------------------------|
+| RGWheads | `~/apps/RGWheads_oct-quad`   | `rgw_heads_app` | `rgw_heads` | `3839→3838`   | `/app/app.R`                 |
+| RGWchart | `~/apps/RGWchart`            | `rgw_chart_app` | `rgw_chart` | `3838→3838`   | `/srv/shiny-server/app.R`    |
+
+> Names above are the convention used here. If your existing containers/images
+> use different names, run `docker ps` / `docker images` and substitute them
+> (or adopt these names — the redeploy below removes the old container anyway).
+
+### The one rule that bites everyone
+
+`docker build` makes a **new image**. A **running container keeps running the old
+image** until you remove and recreate it. So a rebuild alone changes nothing on
+the live site — you must `docker rm -f <name>` then `docker run …` again. (Code
+is **copied in at build time**; there is no live mount.) The website is separate
+— GitHub Pages serves `docs/` on push, no Docker.
+
+### A. RGWheads — first deploy
 
 ```bash
-cd ~/apps/RGWheads_oct-quad        # the deployed clone
-git pull                            # get the new app.R / scripts
-
-# demo/ is gitignored (not in the clone). If you changed/added demos, re-sync
-# from your local machine first (otherwise the existing server copy is reused):
+cd ~/apps/RGWheads_oct-quad
+git pull
+# demo/ is gitignored — copy it in BEFORE building (build context, not git,
+# carries it). One-time / only when the demo changes. Run from your LOCAL repo:
 #   rsync -avz demo/ user@server:~/apps/RGWheads_oct-quad/demo/
-
-docker build -t rgw_heads_app .     # rebuild (see the BUILD GOTCHA in §2/CLAUDE)
-docker rm -f rgw_heads              # stop+remove the old container
+docker build -t rgw_heads_app .
 docker run -d --restart unless-stopped --name rgw_heads -p 3839:3838 rgw_heads_app
-docker logs -f rgw_heads            # watch startup for R errors
-
-docker image prune -f               # optional: reclaim the old image layer
+docker logs -f rgw_heads          # Ctrl-C once you see it listening / no errors
 ```
 
-**RGWchart** (separate repo/image) is the same pattern: `git pull` →
-`docker build -t rgw_chart_app .` → `docker rm -f rgw_chart && docker run -d
---restart unless-stopped --name rgw_chart -p 3838:3838 rgw_chart_app`.
+### B. RGWchart — first deploy
 
-Notes:
+```bash
+cd ~/apps/RGWchart
+git pull
+docker build -t rgw_chart_app .   # build context is small (copies app.R + scripts/)
+docker run -d --restart unless-stopped --name rgw_chart -p 3838:3838 rgw_chart_app
+docker logs -f rgw_chart
+```
+
+### C. Redeploy either app after a code change
+
+Same three steps; the `docker rm -f` is the part that's easy to forget:
+
+```bash
+# --- RGWheads ---
+cd ~/apps/RGWheads_oct-quad && git pull
+docker build -t rgw_heads_app .
+docker rm -f rgw_heads
+docker run -d --restart unless-stopped --name rgw_heads -p 3839:3838 rgw_heads_app
+
+# --- RGWchart ---
+cd ~/apps/RGWchart && git pull
+docker build -t rgw_chart_app .
+docker rm -f rgw_chart
+docker run -d --restart unless-stopped --name rgw_chart -p 3838:3838 rgw_chart_app
+
+docker image prune -f             # optional: reclaim the now-dangling old images
+```
+
+### D. Verify the new code is actually live (when it "still looks old")
+
+```bash
+# 1) Is the running container newer than your rebuild?
+docker ps                         # check the CONTAINER's CREATED column
+docker images | grep rgw          # check the IMAGE's CREATED column
+#    Container older than the image  ->  you skipped `docker rm -f` + run (step C).
+
+# 2) Is the new code inside the running container? (look for a known-new string)
+docker exec rgw_heads grep -c app-back-btn /app/app.R              # expect >= 1
+docker exec rgw_chart grep -c app-back-btn /srv/shiny-server/app.R # expect >= 1
+#    0  ->  the build missed your changes: confirm `git pull` ran in the dir you
+#           built from (`git log --oneline -1`), and you rebuilt that image.
+
+# 3) Still old in the browser but correct in the container  ->  it's a cache:
+#    - hard refresh (Ctrl/Cmd+Shift+R) or an incognito window (Shiny caches JS/CSS)
+#    - if the subdomain is proxied by Cloudflare, purge cache (or enable
+#      Development Mode briefly)
+```
+
+### Notes
+
 *   `APP_PASSWORD` / `RGWCHART_PASSWORD` are no longer required (login disabled).
-*   Host ports must stay distinct (heads 3839, chart 3838); both map to 3838
-    inside their containers.
-*   Smoke-test after restart: load the page, load the HPM demo, toggle
-    Heads/Drawdown, confirm the dark theme + top bar render.
+*   Host ports must stay distinct (heads **3839**, chart **3838**); both map to
+    `3838` inside their containers, so don't change the right-hand `:3838`.
+*   Smoke-test after redeploy: load the page (hard refresh), check the dark theme
+    + dark top bar + `← crayfisher.com` button; for RGWheads also load the HPM
+    demo and toggle Heads/Drawdown.
