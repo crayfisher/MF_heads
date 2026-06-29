@@ -55,12 +55,19 @@ To keep the Docker image small and secure, this file was manually pruned to *onl
 The `rdeck` package is **not** available on CRAN or conda-forge. It is a GitHub-only package. 
 If you look at the `Dockerfile`, there is a dedicated line using `remotes::install_github('qfes/rdeck')` to compile it from source. This is why the C++ compilers were added to the `environment.yml`.
 
-## 3. Security (shinymanager)
+## 3. Security (public access + Cloudflare)
 
-The application is protected behind a login screen using `shinymanager`. 
-*   **Username:** `viewer`
-*   **Password:** The password is **never** hardcoded into `app.R` or the Docker image. 
-*   It securely reads from an environment variable (`APP_PASSWORD`) that you inject at runtime. If you run the app locally in RStudio without Docker, it will default to `rgw_secret` so your local development is not interrupted.
+**Login is currently disabled.** The app is public (linked from the Crayfisher
+website), so the `shinymanager` gate is commented out in both the UI
+(`secure_app`) and server (`secure_server`) — re-enable by uncommenting both
+blocks in `app.R`. The `APP_PASSWORD` env var is no longer needed.
+
+Because there is no in-app auth, two layers protect the app:
+*   **Cloudflare** edge (Bot Fight Mode + optional rate limiting) — see §6.
+*   **Server-side upload validation** in `app.R` (`validate_upload()`): every
+    upload is checked by extension, and ZIP/Parquet are verified by magic bytes,
+    before anything reaches the flopy/MODFLOW pipeline.
+Do **not** expose the container publicly until Cloudflare is in front of it.
 
 ## 3b. Bundled Demo / Test Data
 
@@ -246,8 +253,44 @@ Before deploying to the server, smoke-test locally:
 
 ```bash
 docker build -t rgw_heads_app .
-docker run -d --rm --name rgw_heads_test -p 3839:3838 -e APP_PASSWORD=test rgw_heads_app
+docker run -d --rm --name rgw_heads_test -p 3839:3838 rgw_heads_app
 # open http://localhost:3839 ; load the HPM demo; toggle Heads/Drawdown
 docker logs -f rgw_heads_test     # watch for processing/runtime errors
 docker stop rgw_heads_test
 ```
+
+## 8. Rebuild & redeploy (after code changes)
+
+The image **copies `app.R` in at build time**, so any change to the app only
+takes effect after a rebuild + container restart. (The Crayfisher website is
+separate — GitHub Pages serves `docs/` directly, so a `git push` is its whole
+"deploy"; it is not Docker.)
+
+On the server:
+
+```bash
+cd ~/apps/RGWheads_oct-quad        # the deployed clone
+git pull                            # get the new app.R / scripts
+
+# demo/ is gitignored (not in the clone). If you changed/added demos, re-sync
+# from your local machine first (otherwise the existing server copy is reused):
+#   rsync -avz demo/ user@server:~/apps/RGWheads_oct-quad/demo/
+
+docker build -t rgw_heads_app .     # rebuild (see the BUILD GOTCHA in §2/CLAUDE)
+docker rm -f rgw_heads              # stop+remove the old container
+docker run -d --restart unless-stopped --name rgw_heads -p 3839:3838 rgw_heads_app
+docker logs -f rgw_heads            # watch startup for R errors
+
+docker image prune -f               # optional: reclaim the old image layer
+```
+
+**RGWchart** (separate repo/image) is the same pattern: `git pull` →
+`docker build -t rgw_chart_app .` → `docker rm -f rgw_chart && docker run -d
+--restart unless-stopped --name rgw_chart -p 3838:3838 rgw_chart_app`.
+
+Notes:
+*   `APP_PASSWORD` / `RGWCHART_PASSWORD` are no longer required (login disabled).
+*   Host ports must stay distinct (heads 3839, chart 3838); both map to 3838
+    inside their containers.
+*   Smoke-test after restart: load the page, load the HPM demo, toggle
+    Heads/Drawdown, confirm the dark theme + top bar render.
