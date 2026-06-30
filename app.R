@@ -77,10 +77,17 @@ custom_css <- "
   .navbar, .bslib-page-sidebar > .navbar { background-color: #150726 !important; background-image: none !important; color: #00bc8c !important; border-bottom: 1px solid rgba(50,251,226,0.18) !important; box-shadow: none !important; position: relative; }
   .navbar .bslib-page-title { color: #00bc8c !important; font-weight: 700; }
   .navbar-brand { color: #00bc8c !important; font-weight: 700 !important; letter-spacing: 0.3px; text-shadow: 0 0 12px rgba(0,188,140,0.45); }
-  /* Back-to-site link pinned to the right of the top bar; explicit bright colour
-     so it's readable at rest (outline-info rendered too dark on the dark bar). */
-  .app-back-btn { position: absolute !important; right: 16px; top: 50%; transform: translateY(-50%); z-index: 5; color: #32fbe2 !important; border-color: #32fbe2 !important; background: rgba(50,251,226,0.08) !important; }
-  .app-back-btn:hover { background: #32fbe2 !important; color: #150726 !important; box-shadow: 0 0 14px rgba(50,251,226,0.5) !important; }
+  /* Keep the title text + BETA pill together at the left (the page-title flex
+     container would otherwise push a loose badge to the far right). */
+  .app-title-wrap { display: inline-flex; align-items: center; }
+  /* Large BETA pill next to the app title (matches the website apps badge). */
+  .app-beta-badge { display: inline-block; margin-left: 12px; padding: 3px 13px; font-size: 0.78rem; font-weight: 800; letter-spacing: 1.5px; color: #1a0933; background: #32fbe2; border-radius: 30px; vertical-align: middle; text-shadow: none; box-shadow: 0 0 14px rgba(50,251,226,0.6); }
+  /* Header link buttons (GitHub / report bug / back-to-site) grouped at the right
+     of the top bar; explicit bright colour so they read at rest (outline-info
+     rendered too dark on the dark bar). */
+  .app-header-links { position: absolute !important; right: 16px; top: 50%; transform: translateY(-50%); z-index: 5; display: flex; gap: 8px; align-items: center; }
+  .app-header-links .btn { color: #32fbe2 !important; border-color: #32fbe2 !important; background: rgba(50,251,226,0.08) !important; }
+  .app-header-links .btn:hover { background: #32fbe2 !important; color: #150726 !important; box-shadow: 0 0 14px rgba(50,251,226,0.5) !important; }
   h1, h2, h3, h4 { color: #00bc8c; }
   .card {
     background: #241046 !important;
@@ -101,6 +108,10 @@ custom_css <- "
   .btn-primary:hover, .btn-success:hover, .btn-info:hover { box-shadow: 0 0 16px rgba(0,188,140,0.55) !important; transform: translateY(-1px); }
   .btn-info { color: #04130e !important; }
   .btn-secondary { color: #ece7f7 !important; }
+  /* Outline-info buttons (About panel: Source code / Report a bug): bright teal
+     so they're clearly readable on the dark panel, not just on hover. */
+  .btn-outline-info { color: #32fbe2 !important; border-color: #32fbe2 !important; }
+  .btn-outline-info:hover { background: #32fbe2 !important; color: #150726 !important; box-shadow: 0 0 14px rgba(50,251,226,0.5) !important; }
   /* Outline buttons (e.g. Remove): keep text visible on the dark bg, not only on hover. */
   .btn-danger { color: #fff !important; }
   .btn-outline-danger { color: #ff7088 !important; border-color: #ff7088 !important; }
@@ -110,27 +121,28 @@ custom_css <- "
   a:hover { color: #32fbe2; }
 "
 
-# Secure credentials using environment variables
-# Pass the password at runtime via: docker run -e APP_PASSWORD="your_password" ...
-app_pass <- Sys.getenv("APP_PASSWORD")
-if (app_pass == "") {
-  app_pass <- "rgw_secret" # Fallback for local testing
-}
+# Login is disabled (public app), so no credentials are configured here. To
+# re-introduce a shinymanager gate, build a `credentials` data.frame from an
+# env-var password (never hard-code one) and uncomment the secure_app/
+# secure_server lines below.
 
-# Same method as the RGWchart app: shinymanager with a scrypt-hashed password
-# sourced from the env var (APP_PASSWORD here), so no plaintext is stored.
-credentials <- data.frame(
-  user = c("viewer"),
-  password = c(scrypt::hashPassword(app_pass)),
-  is_hashed_password = TRUE,
-  stringsAsFactors = FALSE
-)
+# GitHub repository for this app (source + bug reports).
+APP_REPO <- "https://github.com/crayfisher/MF_heads"
 
 ui <- page_sidebar(
   title = tagList(
-    "RGW Heads Visualizer (WebGL)",
-    tags$a("← crayfisher.com", href = "https://crayfisher.com",
-           class = "btn btn-outline-info btn-sm app-back-btn")
+    div(class = "app-title-wrap",
+      tags$span("MODFLOW heads visualiser", class = "app-title-text"),
+      tags$span("BETA", class = "app-beta-badge")
+    ),
+    div(class = "app-header-links",
+      tags$a(icon("github"), href = APP_REPO, target = "_blank", rel = "noopener",
+             title = "Source code on GitHub", class = "btn btn-outline-info btn-sm"),
+      tags$a(icon("bug"), href = paste0(APP_REPO, "/issues/new"), target = "_blank",
+             rel = "noopener", title = "Report a bug", class = "btn btn-outline-info btn-sm"),
+      tags$a("← crayfisher.com", href = "https://crayfisher.com",
+             class = "btn btn-outline-info btn-sm app-back-btn")
+    )
   ),
   # Compile the custom CSS into the theme so it reliably lands in <head>.
   # (page_sidebar has no `header` arg; passing tags$head via ... rendered a
@@ -146,7 +158,37 @@ ui <- page_sidebar(
       div(strong(icon("map-pin"), " Node: "), textOutput("node_text", inline = TRUE))
     ),
     accordion(
-      open = c("1. Data Uploads", "3. Slicing & Extraction"),
+      open = c("0. About", "1. Data Uploads", "4. Slicing & Extraction"),
+      accordion_panel(
+        "0. About",
+        icon = icon("circle-info"),
+        div(style = "font-size: 0.85rem; line-height: 1.5;",
+          div(style = "margin-bottom: 8px;",
+            tags$span("Beta — under active testing", class = "app-beta-badge",
+                      style = "margin-left: 0;")),
+          tags$p(style = "margin-bottom: 6px;",
+            tags$strong("GWheads", style = "color: #32fbe2;"),
+            " — MODFLOW heads visualiser for mf6, usg, mf2005."),
+          tags$p(style = "margin-bottom: 8px; color: #a99fce;",
+            "Interactive, web-native Shiny-based 2D visualisation of hydraulic ",
+            "heads, drawdown distributions, and hydrographs."),
+          tags$p(style = "margin-bottom: 8px; color: #a99fce;",
+            "Powered by ",
+            tags$a("FloPy", href = "https://github.com/modflowpy/flopy",
+                   target = "_blank", rel = "noopener"),
+            " — Python scripting for MODFLOW."),
+          div(style = "display: flex; flex-wrap: wrap; gap: 8px;",
+            tags$a(icon("github"), " Source code", href = APP_REPO,
+                   target = "_blank", rel = "noopener",
+                   class = "btn btn-outline-info btn-sm"),
+            tags$a(icon("bug"), " Report a bug", href = paste0(APP_REPO, "/issues/new"),
+                   target = "_blank", rel = "noopener",
+                   class = "btn btn-outline-info btn-sm")
+          ),
+          div(style = "font-size: 0.75rem; color: #a99fce; margin-top: 8px;",
+            "Found a problem or have a request? Please open an issue on GitHub.")
+        )
+      ),
       accordion_panel(
         "1. Data Uploads",
         icon = icon("cloud-upload-alt"),
@@ -610,7 +652,27 @@ server <- function(input, output, session) {
                      class = "btn-info btn-sm", style = "margin-bottom: 0;")
       ),
       div(style = "font-size: 0.78rem; color: #a99fce;",
-          "Pre-processed sample model for demonstration - loads instantly.")
+          "Pre-processed sample model for demonstration - loads instantly."),
+      if (any(tolower(dirs) == "hpm")) {
+        div(style = "font-size: 0.72rem; color: #a99fce; margin-top: 8px; line-height: 1.35; border-top: 1px solid rgba(169,159,206,0.25); padding-top: 8px;",
+          tags$strong("HPM", style = "color: #32fbe2;"),
+          " - Heretaunga Plains groundwater model, developed by Hawkes Bay ",
+          "Regional Council, NZ. Documented in the Heretaunga Aquifer ",
+          "Groundwater Model Development Report:",
+          tags$br(),
+          "Rakowski P., Knowling M. (2018) ",
+          tags$em("4997 Heretaunga Aquifer Groundwater Model Development Report"),
+          ". ",
+          tags$a("Executive summary", target = "_blank", rel = "noopener",
+                 style = "color: #32fbe2;",
+                 href = "https://www.hbrc.govt.nz/assets/Document-Library/Publications-Database/4999-Executive-summary-of-Heretaunga-Aquifer-Groundwater-Model-Development-Report1.pdf"),
+          " | ",
+          tags$a("full report", target = "_blank", rel = "noopener",
+                 style = "color: #32fbe2;",
+                 href = "https://www.hbrc.govt.nz/assets/Document-Library/Publications-Database/4997-Heretaunga-Model-Groundwater-Development-Report.pdf"),
+          "."
+        )
+      }
     )
   })
 

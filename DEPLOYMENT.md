@@ -5,6 +5,12 @@ for the `RGWheads` Shiny application. **§8 is the exact deploy/redeploy command
 reference for both `RGWheads` and `RGWchart`** (the two apps are separate repos,
 images, and containers).
 
+> **Repositories** (renamed 2026-06-30):
+> RGWheads = `git@github.com:crayfisher/MF_heads.git` ·
+> RGWchart = `git@github.com:crayfisher/MF_lst.git`.
+> A `redeploy.sh` in each repo runs the build + recreate + verify in one step
+> (see §8) — the manual commands below remain the reference.
+
 ## 1. Architecture
 
 The Docker container is built on top of **`mambaorg/micromamba`** rather than the standard `rocker/shiny` image. 
@@ -330,6 +336,23 @@ docker run -d --restart unless-stopped --name rgw_chart -p 3838:3838 rgw_chart_a
 
 docker image prune -f             # optional: reclaim the now-dangling old images
 ```
+
+### C2. One-command redeploy (`redeploy.sh`)
+
+Each repo ships a `redeploy.sh` that does exactly steps A–C (git pull → build →
+`docker rm -f` → run → verify) for that app, so you don't have to remember the
+flags or the `rm -f`:
+
+```bash
+# RGWheads
+cd ~/apps/RGWheads_oct-quad && ./redeploy.sh
+# RGWchart
+cd ~/apps/RGWchart && ./redeploy.sh
+```
+
+It's safe for a first deploy too (the `docker rm -f` simply no-ops if the
+container doesn't exist yet). For RGWheads, make sure `demo/` is present locally
+first (it's gitignored — see §3b).
 
 ### D. Verify the new code is actually live (when it "still looks old")
 

@@ -128,8 +128,31 @@ destabilising the working build.
 ## Content / onboarding
 - [ ] **Landing page.** Add an intro page (general concepts + instructions) shown
   before/alongside the map — candidate first tab of a future `page_navbar`.
-- [ ] **HPM model reference.** Add attribution for the HPM demo model (author +
-  link) in the UI (e.g. on the landing page or an About/info popover).
+- [x] **HPM model reference.** Done: the demo panel now shows HPM attribution
+  (Hawkes Bay Regional Council; Rakowski & Knowling 2018 report + HBRC
+  exec-summary/full-report PDF links) whenever an `hpm` demo dir is present. Also
+  recorded in `README.md`.
+
+## Public release & branding 2026-06-30 (session 4)
+- [x] **Repos renamed for public release.** `RGWheads_oct-quad` →
+  `crayfisher/MF_heads`; `RGWchart` → `crayfisher/MF_lst`. Git remotes repointed
+  (`git remote set-url`); both confirmed reachable.
+- [x] **Title bars rebranded.** RGWheads → "MODFLOW heads visualiser"; RGWchart →
+  "MODFLOW listing file viewer". Each shows a large **BETA** pill (grouped with the
+  title in `.app-title-wrap`) plus a right-aligned link group: GitHub source,
+  report-a-bug (`<repo>/issues/new`), and the `← crayfisher.com` back button.
+- [x] **"0. About" info panel (both apps).** Top-of-sidebar panel: a
+  "Beta — under active testing" pill, the app description, Source/Report-a-bug
+  buttons, FloPy attribution, and (chart) USGS GW_Chart credit.
+- [x] **FloPy attribution.** "Powered by FloPy" in both About panels + an
+  Acknowledgements section with the Bakker et al. (2016) citation in both READMEs.
+- [x] **READMEs added** to both repos.
+- [x] **Public-repo hygiene.** Removed dead login code + hard-coded fallback
+  passwords from both `app.R`; `git rm` stale `rsconnect/...RGWchart.dcf`;
+  `.gitignore` now excludes local AI-assistant files (CLAUDE.md, ANTIGRAVITY.md,
+  GEMINI.md, AGENTS.md, .cursorrules, .aider*, .claude/).
+- [x] **About-panel buttons visibility.** Added a `.btn-outline-info` rule (bright
+  teal) so the Source/Report-a-bug buttons read at rest, not only on hover.
 
 ## Known limitations / follow-ups
 - [ ] **HPM null run convergence.** Removing WEL left 46/420 stress periods not

@@ -14,3 +14,14 @@ __pycache__/
 # Demo/test data is NOT committed to git (can be large). It is still copied into
 # the Docker image via the build context - see the !demo/ rule in .dockerignore.
 demo/
+
+# Local AI-assistant instruction/scratch files - never publish (may hold personal
+# env paths / private notes).
+CLAUDE.md
+ANTIGRAVITY.md
+Antigravity.md
+GEMINI.md
+AGENTS.md
+.cursorrules
+.aider*
+.claude/
