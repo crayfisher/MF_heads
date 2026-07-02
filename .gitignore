@@ -17,6 +17,9 @@ demo/
 
 # Local AI-assistant instruction/scratch files - never publish (may hold personal
 # env paths / private notes).
+# ai_roadmap.md = private business/monetisation strategy (closed-source vault
+# plan); this is a PUBLIC repo, so it must never be committed here.
+ai_roadmap.md
 CLAUDE.md
 ANTIGRAVITY.md
 Antigravity.md
