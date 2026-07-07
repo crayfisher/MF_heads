@@ -71,12 +71,19 @@ website), so the `shinymanager` gate is commented out in both the UI
 (`secure_app`) and server (`secure_server`) — re-enable by uncommenting both
 blocks in `app.R`. The `APP_PASSWORD` env var is no longer needed.
 
-Because there is no in-app auth, two layers protect the app:
+Because there is no in-app auth, three layers protect the app:
+*   **Origin binding:** the container is published to `127.0.0.1` only
+    (`-p 127.0.0.1:HOST:3838`, see §5/§8), never `0.0.0.0`. The origin
+    port is not reachable from outside the server at all — only Caddy,
+    running on the same host, can reach it. This is what makes Cloudflare
+    actually enforceable rather than bypassable by hitting `<server-ip>:port`
+    directly.
 *   **Cloudflare** edge (Bot Fight Mode + optional rate limiting) — see §6.
 *   **Server-side upload validation** in `app.R` (`validate_upload()`): every
     upload is checked by extension, and ZIP/Parquet are verified by magic bytes,
     before anything reaches the flopy/MODFLOW pipeline.
-Do **not** expose the container publicly until Cloudflare is in front of it.
+Do **not** publish a container port to `0.0.0.0` — that would make it reachable
+directly, bypassing Cloudflare entirely.
 
 ## 3b. Bundled Demo / Test Data
 
@@ -171,7 +178,7 @@ either way). Full server flow:
 git pull                                          # code (no demo)
 rsync -avz demo/ server:~/apps/RGWheads_oct-quad/demo/   # one-time / on demo change
 docker build -t rgw_heads_app .                   # build context includes demo/
-docker run -d --restart unless-stopped --name rgw_heads -p 3839:3838 rgw_heads_app
+docker run -d --restart unless-stopped --name rgw_heads -p 127.0.0.1:3839:3838 rgw_heads_app
 ```
 (See **§8** for the full deploy/redeploy reference for both apps.)
 
@@ -195,21 +202,25 @@ docker build -t rgw_heads_app .
 ## 5. Running the Container
 
 Once built, launch the container with `docker run`. The app listens on `3838`
-*inside* the container; map it to a host port with `-p HOST:3838`. RGWheads uses
-host port **3839** (RGWchart takes 3838 — see §6). No password is needed (login
-is disabled, §3).
+*inside* the container; map it to a host port with `-p 127.0.0.1:HOST:3838` —
+**bind to `127.0.0.1`, not `0.0.0.0`**, so the origin isn't reachable except
+through the reverse proxy on the same host (see §3). RGWheads uses host port
+**3839** (RGWchart takes 3838 — see §6). No password is needed (login is
+disabled, §3).
 
 **Foreground mode (testing — see logs live):**
 ```bash
-docker run --rm -p 3839:3838 rgw_heads_app
+docker run --rm -p 127.0.0.1:3839:3838 rgw_heads_app
 ```
 
 **Detached/daemon mode (production):**
 ```bash
-docker run -d --restart unless-stopped --name rgw_heads -p 3839:3838 rgw_heads_app
+docker run -d --restart unless-stopped --name rgw_heads -p 127.0.0.1:3839:3838 rgw_heads_app
 ```
 
-Then it's reachable at `http://<server-ip>:3839` (or `http://localhost:3839`).
+Bound to `127.0.0.1`, it's reachable at `http://localhost:3839` **from the
+server itself only** (e.g. via Caddy, or `ssh -L 3839:localhost:3839` for a
+quick remote check) — not from `http://<server-ip>:3839` on the open internet.
 
 > The exact, copy-paste commands for a **first deploy** and a **redeploy** of
 > **both** apps are in **§8** — that is the authoritative command reference.
@@ -223,10 +234,11 @@ other app**:
 
 ```bash
 # RGWchart already running on host port 3838
-docker run -d --restart unless-stopped --name rgw_heads -p 3839:3838 rgw_heads_app
+docker run -d --restart unless-stopped --name rgw_heads -p 127.0.0.1:3839:3838 rgw_heads_app
 ```
 
-RGWheads is then at `http://<server>:3839`, RGWchart stays at `:3838`.
+Both stay loopback-only (`127.0.0.1:3839` and `127.0.0.1:3838`); Caddy on the
+same host reverse-proxies each to its public hostname (below).
 
 **Cleaner URLs (recommended next):** put a reverse proxy on 443 in front of both
 and route by subdomain (add DNS A-records → server). [Caddy](https://caddyserver.com)
@@ -266,7 +278,7 @@ Before deploying to the server, smoke-test locally:
 
 ```bash
 docker build -t rgw_heads_app .
-docker run -d --rm --name rgw_heads_test -p 3839:3838 rgw_heads_app
+docker run -d --rm --name rgw_heads_test -p 127.0.0.1:3839:3838 rgw_heads_app
 # open http://localhost:3839 ; load the HPM demo; toggle Heads/Drawdown
 docker logs -f rgw_heads_test     # watch for processing/runtime errors
 docker stop rgw_heads_test
@@ -277,14 +289,17 @@ docker stop rgw_heads_test
 This is the authoritative command reference. The two apps are **separate repos /
 images / containers**:
 
-| App      | Repo dir (server)            | Image           | Container   | Host→ctr port | App file in image            |
-|----------|------------------------------|-----------------|-------------|---------------|------------------------------|
-| RGWheads | `~/apps/RGWheads_oct-quad`   | `rgw_heads_app` | `rgw_heads` | `3839→3838`   | `/app/app.R`                 |
-| RGWchart | `~/apps/RGWchart`            | `rgw_chart_app` | `rgw_chart` | `3838→3838`   | `/srv/shiny-server/app.R`    |
+| App      | Repo dir (server)            | Image           | Container   | Host→ctr port          | App file in image            |
+|----------|------------------------------|-----------------|-------------|------------------------|------------------------------|
+| RGWheads | `~/apps/RGWheads_oct-quad`   | `rgw_heads_app` | `rgw_heads` | `127.0.0.1:3839→3838`  | `/app/app.R`                 |
+| RGWchart | `~/apps/RGWchart`            | `rgw_chart_app` | `rgw_chart` | `127.0.0.1:3838→3838`  | `/srv/shiny-server/app.R`    |
 
 > Names above are the convention used here. If your existing containers/images
 > use different names, run `docker ps` / `docker images` and substitute them
 > (or adopt these names — the redeploy below removes the old container anyway).
+> Both host ports are bound to `127.0.0.1` (never `0.0.0.0`) — the origin is
+> reachable only from Caddy on the same host, not directly from the internet.
+> This is what makes Cloudflare's edge protection (§6) non-bypassable.
 
 ### The one rule that bites everyone
 
@@ -303,7 +318,7 @@ git pull
 # carries it). One-time / only when the demo changes. Run from your LOCAL repo:
 #   rsync -avz demo/ user@server:~/apps/RGWheads_oct-quad/demo/
 docker build -t rgw_heads_app .
-docker run -d --restart unless-stopped --name rgw_heads -p 3839:3838 rgw_heads_app
+docker run -d --restart unless-stopped --name rgw_heads -p 127.0.0.1:3839:3838 rgw_heads_app
 docker logs -f rgw_heads          # Ctrl-C once you see it listening / no errors
 ```
 
@@ -313,7 +328,7 @@ docker logs -f rgw_heads          # Ctrl-C once you see it listening / no errors
 cd ~/apps/RGWchart
 git pull
 docker build -t rgw_chart_app .   # build context is small (copies app.R + scripts/)
-docker run -d --restart unless-stopped --name rgw_chart -p 3838:3838 rgw_chart_app
+docker run -d --restart unless-stopped --name rgw_chart -p 127.0.0.1:3838:3838 rgw_chart_app
 docker logs -f rgw_chart
 ```
 
@@ -326,13 +341,13 @@ Same three steps; the `docker rm -f` is the part that's easy to forget:
 cd ~/apps/RGWheads_oct-quad && git pull
 docker build -t rgw_heads_app .
 docker rm -f rgw_heads
-docker run -d --restart unless-stopped --name rgw_heads -p 3839:3838 rgw_heads_app
+docker run -d --restart unless-stopped --name rgw_heads -p 127.0.0.1:3839:3838 rgw_heads_app
 
 # --- RGWchart ---
 cd ~/apps/RGWchart && git pull
 docker build -t rgw_chart_app .
 docker rm -f rgw_chart
-docker run -d --restart unless-stopped --name rgw_chart -p 3838:3838 rgw_chart_app
+docker run -d --restart unless-stopped --name rgw_chart -p 127.0.0.1:3838:3838 rgw_chart_app
 
 docker image prune -f             # optional: reclaim the now-dangling old images
 ```

@@ -26,7 +26,7 @@ docker build -t "${IMAGE}" .
 echo "==> recreate container ${CONTAINER}"
 docker rm -f "${CONTAINER}" 2>/dev/null || true
 docker run -d --restart unless-stopped --name "${CONTAINER}" \
-  -p "${HOST_PORT}:${CTR_PORT}" "${IMAGE}"
+  -p "127.0.0.1:${HOST_PORT}:${CTR_PORT}" "${IMAGE}"
 
 echo "==> verify"
 docker ps --filter "name=${CONTAINER}"
@@ -36,4 +36,4 @@ else
   echo "   WARNING: expected marker not found in ${APP_PATH} — check the build."
 fi
 
-echo "Done -> http://localhost:${HOST_PORT}  (hard-refresh the browser if it looks old)"
+echo "Done -> http://127.0.0.1:${HOST_PORT} on the server (behind Caddy/Cloudflare for the public URL; hard-refresh the browser if it looks old)"

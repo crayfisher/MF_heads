@@ -33,11 +33,12 @@ shiny::runApp("app.R")
 
 ```bash
 docker build -t rgw_heads_app .
-docker run -d --restart unless-stopped --name rgw_heads -p 3839:3838 rgw_heads_app
+docker run -d --restart unless-stopped --name rgw_heads -p 127.0.0.1:3839:3838 rgw_heads_app
 ```
 
-The app listens on `3838` inside the container. See `DEPLOYMENT.md` for the full
-deploy/redeploy reference (covers both this app and the companion
+The app listens on `3838` inside the container, bound to `127.0.0.1` on the
+host so it's only reachable through the reverse proxy, not directly. See
+`DEPLOYMENT.md` for the full deploy/redeploy reference (covers both this app and the companion
 [GWchart / MF_lst](https://github.com/crayfisher/MF_lst) listing-file viewer).
 
 > Demo data lives in `demo/` and is **gitignored** (it can be large); it is copied
