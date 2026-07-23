@@ -35,8 +35,8 @@ app_theme <- bslib::bs_theme(
   secondary = CF_SECONDARY,
   success = CF_PRIMARY,
   info = CF_ACCENT,
-  base_font = bslib::font_google("Inter"),
-  heading_font = bslib::font_google("Outfit"),
+  base_font = bslib::font_google("Space Grotesk"),
+  heading_font = bslib::font_google("Space Grotesk"),
   bg = CF_BG,
   fg = CF_FG
 )
@@ -44,6 +44,7 @@ app_theme <- bslib::bs_theme(
 # Custom CSS for the vivid, glowing look (matches the website's neon accents).
 # Literal hex values here mirror the CF_* constants above; keep them aligned.
 cf_custom_css <- "
+  @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@500..800&display=swap');
   body { background: radial-gradient(circle at 20% 0%, #2a0f52 0%, #1a0933 55%) !important; }
   /* bslib's page-sidebar title bar derives its background + text colour from
      these two CSS vars; vapor sets them to pink bg / dark text. Pin both to the
@@ -64,6 +65,9 @@ cf_custom_css <- "
   .app-header-links .btn { color: #32fbe2 !important; border-color: #32fbe2 !important; background: rgba(50,251,226,0.08) !important; }
   .app-header-links .btn:hover { background: #32fbe2 !important; color: #150726 !important; box-shadow: 0 0 14px rgba(50,251,226,0.5) !important; }
   h1, h2, h3, h4 { color: #00bc8c; }
+  /* Only actual Crayfisher brand references get the wordmark font (Orbitron);
+     matches the website scoping, which keeps it off general headings/body text. */
+  .app-back-btn { font-family: 'Orbitron', sans-serif; }
   .card {
     background: #241046 !important;
     border: 1px solid rgba(255,255,255,0.08) !important;
