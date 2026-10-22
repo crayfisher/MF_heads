@@ -29,6 +29,65 @@ flopy via the `flopy_env` conda env for model processing):
 shiny::runApp("app.R")
 ```
 
+## Review bundles (local use)
+
+A **review bundle** is one folder of plain tables exported from one model run,
+for reviewing it interactively: grid, heads, an optional baseline run, and
+optionally targets, CLN nodes, pumping and parameter fields. A model project
+writes it with its own exporter; the app only reads it, in place.
+
+```bash
+./run_app.sh --bundles <folder>     # or: CF_BUNDLE_ROOT=<folder> ./run_app.sh
+```
+
+"1. Data Uploads" then lists every bundle (a folder with `manifest.json`) under
+`<folder>`. The picker exists only when the folder is configured, so a hosted
+copy never exposes the server's disk.
+
+| File | Columns |
+|---|---|
+| `manifest.json` | `title`, `model_type`, `crs` (`EPSG:nnnn`), `start_date`, `time_units`, `n_layers`, `nodes_per_layer`, `n_periods`, `segments` |
+| `Grid.parquet` | GeoParquet cell polygons: `nodenumber`, `layer`, `nodenumberL1` (+ `top`, `bot`, `area`, `zone`) |
+| `Times.csv` | `SP`, `time` (days to the period's end) + optional `date_end`, `date_start`, `segment`, `kper` |
+| `Heads.parquet` | `SP`, `layer`, `nodenumberL1`, `h` (dry / inactive = NA) |
+| `Heads_baseline.parquet` | optional, same columns: enables Drawdown (baseline − run) and Difference (run − baseline) |
+| `Sites.parquet` | optional GeoParquet points: `site`, `group`, `layer`, `node`, `cln_node` |
+| `Targets.parquet` | optional: `obsname`, `site`, `group`, `role`, `date`, `SP`, `observed`, `simulated`, `simulated_baseline`, `weight` |
+| `Observations.parquet` | optional: `site`, `datetime`, `value` (m), `source` (e.g. `manual`, `logger`, `survey`), `role` (the target role whose panel they belong in) |
+| `CLN_nodes.parquet` | optional GeoParquet lines and/or points: `cln_node`, `kind`, `name`, `layer`, `gw_node`, `top`, and the bed level as `bed` or per segment `bed_p1`, `bed_p2`, … |
+| `CLN_heads.parquet` | optional: `SP`, `cln_node`, `h`, `active` |
+| `Fields.parquet` | optional: `field` (any name: `kx`, `kz`, `sy`, …), `layer`, `nodenumberL1`, `value`, `run` (`prior`, `run`, `ratio` = run / prior) |
+| `Pumping.parquet` | optional: `SP`, `well`, `kind`, `cln_node`, `requested`, `delivered` (m³/d, out of the aquifer positive) |
+
+With sites and targets, "6. Review Layers" shows the sites on the map (filter by
+group); clicking one plots its observed values against the simulated (and
+baseline) series under the hydrograph. Observations with weight 0 are drawn
+hollow. With observations (the raw measurements behind the targets, which are
+often resampled to stress periods or turned into differences), the site's
+chart also draws them by source, faintly, with the site's simulated (and
+baseline) head in every period, read from its node or CLN node.
+
+With CLN nodes (connected linear network: drains, trenches, bores), the same
+panel draws them coloured by head, or by head − bed, in the selected stress
+period (grey = switched off). Clicking one plots its head against its bed and,
+if it pumps, requested vs delivered pumping. `bed_p<k>` applies to the periods
+of segment `k` in `Times.csv`; a well that moves between CLN nodes keeps one
+`well` name and shows at each node for the periods it pumped there.
+
+With parameter fields, "5. Visual Settings" adds a **Field** display: any field
+on the selected layer, as the run's values, the prior's, or their ratio. Fields
+named `k…` (conductivities) and ratios default to a log colour scale.
+
+Node numbers are 1-based as MODFLOW writes them. `nodenumberL1` is a node's
+position **within its layer**, so layers may have different cells (MODFLOW-USG):
+each layer is drawn from its own polygons, and hydrographs join on
+(`layer`, `nodenumberL1`). `SP` is one global period number, also when the run
+was made in several chained segments.
+
+`scripts/make_test_bundle.py <out_dir>` writes a small synthetic bundle (two
+layers with different cells, two segments) to try this out; the tests in
+`tests/` use it.
+
 ## Run with Docker
 
 ```bash

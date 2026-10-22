@@ -91,6 +91,14 @@ def keep_set(all_sp, frames):
     return all_sp[:int(frames)]  # first N consecutive periods (seasonality preserved)
 
 
+def _is_sentinel(v):
+    """Inactive/dry markers: the model's own (e.g. 99999), plus the usual extremes."""
+    import math
+    if v is None or (isinstance(v, float) and math.isnan(v)):
+        return True
+    return abs(v) >= 1e29 or abs(v) >= 9e4 or v == 999
+
+
 def cast_heads(df):
     df = df.copy()
     df['SP'] = df['SP'].astype(np.uint16)
@@ -108,6 +116,12 @@ def main():
     ap.add_argument("--heads", help="scenario .hds (overrides heads from --grid)")
     ap.add_argument("--baseline", help="optional baseline/null .hds for drawdown")
     ap.add_argument("--frames", default="all", help="'all' or first-N stress periods")
+    ap.add_argument("--drop-inactive", action="store_true",
+                    help="omit rows whose head is a sentinel (inactive/dry cells). "
+                         "The app inner-joins heads to the grid and filters these out "
+                         "anyway, so dropping them at build time changes nothing on "
+                         "screen but cuts the head files by ~60%%. Off by default so "
+                         "existing demo bundles keep their exact schema.")
     args = ap.parse_args()
     usg = args.model_type == "usg"
 
@@ -135,8 +149,18 @@ def main():
 
     os.makedirs(args.out, exist_ok=True)
     shutil.copy(os.path.join(proc, "Grid.parquet"), os.path.join(args.out, "Grid.parquet"))
-    cast_heads(heads_df).to_parquet(os.path.join(args.out, "Heads.parquet"),
-                                    compression="zstd", compression_level=9)
+    def _maybe_drop(df):
+        if not args.drop_inactive:
+            return df
+        before = len(df)
+        keep = df[~df["h"].apply(_is_sentinel)]
+        print(f"  dropped {before - len(keep):,} inactive rows "
+              f"({100 * len(keep) / max(1, before):.0f}% kept)")
+        return keep
+
+    cast_heads(_maybe_drop(heads_df)).to_parquet(
+        os.path.join(args.out, "Heads.parquet"),
+        compression="zstd", compression_level=9)
     times_df.to_csv(os.path.join(args.out, "Times.csv"), index=False)
     for m in META_FILES:
         s = os.path.join(proc, m)
@@ -150,7 +174,7 @@ def main():
         bh = bh[bh["SP"].isin(keep)].copy()
         bh["SP"] = bh["SP"].map(remap)
         bh = bh.sort_values(["SP", "layer", "nodenumberL1"])
-        cast_heads(bh).to_parquet(os.path.join(args.out, "Heads_baseline.parquet"),
+        cast_heads(_maybe_drop(bh)).to_parquet(os.path.join(args.out, "Heads_baseline.parquet"),
                                   compression="zstd", compression_level=9)
         print(f"Baseline written ({len(bh)} rows).")
 

@@ -15,17 +15,51 @@ HOST_PORT="3839"
 CTR_PORT="3838"
 APP_PATH="/app/app.R"
 
-cd "$(dirname "$0")"
+# Works BOTH in the platform monorepo and in the standalone public mirror,
+# because this file is published to the mirror too and must not assume a
+# layout that only exists in one of them.
+#   monorepo   -> git at the repo root; Docker context is ASSEMBLED
+#                 (this app + the shared lib/cf_theme.R) by tools/assemble.sh
+#   standalone -> git and Docker context are both this directory, where
+#                 lib/cf_theme.R is already a real file
+APP_DIR="$(cd "$(dirname "$0")" && pwd)"
+APP="$(basename "$APP_DIR")"
+if [ -x "${APP_DIR}/../../tools/assemble.sh" ]; then
+  MONOREPO=1; ROOT="$(cd "${APP_DIR}/../.." && pwd)"
+else
+  MONOREPO=0; ROOT="$APP_DIR"
+fi
+cd "$ROOT"
 
 echo "==> git pull"
 git pull --ff-only || echo "   (not a fast-forward / no remote change — using local code)"
 
-echo "==> docker build -t ${IMAGE} ."
-docker build -t "${IMAGE}" .
+if [ "$MONOREPO" = 1 ]; then
+  echo "==> assemble build context (apps/${APP} + lib/cf_theme.R)"
+  CTX="$(mktemp -d)"; trap 'rm -rf "$CTX"' EXIT
+  "${ROOT}/tools/assemble.sh" "${APP}" "${CTX}"
+else
+  CTX="$APP_DIR"
+fi
+
+echo "==> docker build -t ${IMAGE} ${CTX}"
+docker build -t "${IMAGE}" "${CTX}"
 
 echo "==> recreate container ${CONTAINER}"
 docker rm -f "${CONTAINER}" 2>/dev/null || true
+# Optional env file for map keys (ARCGIS_API_KEY for the Esri satellite base
+# map). Without it the app runs with the OpenStreetMap base map only. Write
+# values UNQUOTED: docker --env-file does no shell parsing.
+# Map keys shared by all apps live in /etc/crayfisher-maps.env; an app file
+# (/etc/mf_heads.env) may add to or override them. Both optional.
+ENV_FILE="${ENV_FILE:-/etc/mf_heads.env}"
+ENV_ARGS=()
+for f in /etc/crayfisher-maps.env "${ENV_FILE}"; do
+  if [ -f "$f" ]; then ENV_ARGS+=(--env-file "$f"); echo "   using $f"; fi
+done
+[ ${#ENV_ARGS[@]} -eq 0 ] && echo "   no env files — Esri base maps disabled (OpenStreetMap only)"
 docker run -d --restart unless-stopped --name "${CONTAINER}" \
+  ${ENV_ARGS[@]+"${ENV_ARGS[@]}"} \
   -p "127.0.0.1:${HOST_PORT}:${CTR_PORT}" "${IMAGE}"
 
 echo "==> verify"

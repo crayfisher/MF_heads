@@ -1,0 +1,241 @@
+{
+  "_comment": "Shared attributions for every Crayfisher app — the ONE place credits and source links are written. Read by lib/cf_credits.R (About panels, map attribution) and by apps/mf_ai_hbrc/agent (the assistant gives these links when asked). PUBLIC: allowlisted in tools/assemble.sh SHARED_LIB, so it ships to the mirrors. Keyed base maps carry a 'probe' tile that apps request once at start-up, so a missing, expired or unprivileged key hides the option instead of drawing a blank map. A base map's 'tiles' URL lives next to its attribution, so every app uses the same source and a change of provider is one edit.",
+  "hpm": {
+    "title": "HPM — Heretaunga Plains groundwater model",
+    "text": "Heretaunga Aquifer Groundwater Model, developed by Hawke's Bay Regional Council (HBRC), NZ, for the TANK plan (Tūtaekurī, Ahuriri, Ngaruroro and Karamū catchments). Rakowski P., Knowling M. (2018) Heretaunga Aquifer Groundwater Model Development Report, HBRC publication 4997.",
+    "use": "Used with HBRC permission for demonstration. Wells and scenarios are hypothetical test cases, not proposed abstractions.",
+    "links": [
+      {
+        "id": "4999",
+        "label": "Executive summary (HBRC 4999)",
+        "url": "https://www.hbrc.govt.nz/assets/Document-Library/Publications-Database/4999-Executive-summary-of-Heretaunga-Aquifer-Groundwater-Model-Development-Report1.pdf"
+      },
+      {
+        "id": "4997",
+        "label": "Development report (HBRC 4997)",
+        "url": "https://www.hbrc.govt.nz/assets/Document-Library/Publications-Database/4997-Heretaunga-Model-Groundwater-Development-Report.pdf"
+      },
+      {
+        "id": "5018",
+        "label": "Scenarios report (HBRC 5018)",
+        "url": "https://www.hbrc.govt.nz/assets/Document-Library/Publications-Database/5018-Heretaunga-Aquifer-Groundwater-Model-Scenarios-Report-final.pdf"
+      },
+      {
+        "id": "tank",
+        "label": "The TANK plan",
+        "url": "https://www.hbrc.govt.nz/hawkes-bay/projects/the-tank-plan/"
+      }
+    ]
+  },
+  "flopy": {
+    "title": "FloPy",
+    "text": "Python scripting for MODFLOW (USGS).",
+    "links": [
+      {
+        "id": "flopy",
+        "label": "FloPy",
+        "url": "https://github.com/modflowpy/flopy"
+      }
+    ]
+  },
+  "mf6": {
+    "title": "MODFLOW 6",
+    "text": "USGS groundwater flow model.",
+    "links": [
+      {
+        "id": "mf6",
+        "label": "MODFLOW 6",
+        "url": "https://github.com/MODFLOW-ORG/modflow6"
+      }
+    ]
+  },
+  "freyberg": {
+    "title": "Freyberg model",
+    "text": "A synthetic groundwater model widely used to teach and test calibration and uncertainty analysis. Freyberg D.L. (1988) An exercise in ground-water model calibration and prediction, Ground Water 26(3): 350-360. The MODFLOW 6 version used here, with its PEST++ setup, is the PEST++ version 5 benchmark (White et al. 2020; USGS, public domain).",
+    "use": "Not a real place: rates, wells and results are illustrative.",
+    "links": [
+      {
+        "id": "freyberg_1988",
+        "label": "Freyberg (1988)",
+        "url": "https://doi.org/10.1111/j.1745-6584.1988.tb00399.x"
+      },
+      {
+        "id": "freyberg_benchmark",
+        "label": "PEST++ benchmark files",
+        "url": "https://github.com/pestpp/pestpp/tree/master/benchmarks"
+      }
+    ]
+  },
+  "pestpp": {
+    "title": "PEST++",
+    "text": "Parameter estimation and uncertainty analysis software (USGS). The calibrated versions come from its iterative ensemble smoother, pestpp-ies, which also runs the scenarios. White J.T., Hunt R.J., Fienen M.N., Doherty J.E. (2020) Approaches to Highly Parameterized Inversion: PEST++ Version 5, USGS Techniques and Methods 7-C26.",
+    "links": [
+      {
+        "id": "pestpp",
+        "label": "PEST++",
+        "url": "https://github.com/pestpp/pestpp"
+      },
+      {
+        "id": "pestpp_v5",
+        "label": "PEST++ v5 report (USGS)",
+        "url": "https://doi.org/10.3133/tm7C26"
+      }
+    ]
+  },
+  "pyemu": {
+    "title": "pyEMU",
+    "text": "Python tools for PEST and PEST++, used to prepare the parameter tables and the linear analysis.",
+    "links": [
+      {
+        "id": "pyemu",
+        "label": "pyEMU",
+        "url": "https://github.com/pypest/pyemu"
+      }
+    ]
+  },
+  "linz_gazetteer": {
+    "title": "LINZ place names",
+    "text": "Place names from the LINZ New Zealand Gazetteer, sourced from the LINZ Data Service and licensed for reuse under CC BY 4.0.",
+    "links": [
+      {
+        "id": "linz_gaz",
+        "label": "NZ Gazetteer",
+        "url": "https://gazetteer.linz.govt.nz/"
+      },
+      {
+        "id": "ccby",
+        "label": "CC BY 4.0",
+        "url": "https://creativecommons.org/licenses/by/4.0/"
+      }
+    ]
+  },
+  "linz_addresses": {
+    "title": "LINZ addresses",
+    "text": "Street addresses from LINZ NZ Addresses, sourced from the LINZ Data Service and licensed for reuse under CC BY 4.0.",
+    "links": [
+      {
+        "id": "ccby",
+        "label": "CC BY 4.0",
+        "url": "https://creativecommons.org/licenses/by/4.0/"
+      }
+    ]
+  },
+  "osm": {
+    "title": "OpenStreetMap",
+    "text": "Base map © OpenStreetMap contributors.",
+    "map": "© OpenStreetMap contributors",
+    "links": [
+      {
+        "id": "osm",
+        "label": "© OpenStreetMap contributors",
+        "url": "https://www.openstreetmap.org/copyright"
+      }
+    ],
+    "tiles": "https://tile.openstreetmap.org/{z}/{x}/{y}.png"
+  },
+  "linz_aerial": {
+    "title": "LINZ aerial imagery",
+    "text": "Aerial imagery from LINZ Basemaps, sourced from Toitū Te Whenua Land Information New Zealand and licensed for reuse under CC BY 4.0.",
+    "map": "Imagery © LINZ, CC BY 4.0",
+    "links": [
+      {
+        "id": "linz_basemaps",
+        "label": "LINZ Basemaps",
+        "url": "https://basemaps.linz.govt.nz/"
+      },
+      {
+        "id": "ccby",
+        "label": "CC BY 4.0",
+        "url": "https://creativecommons.org/licenses/by/4.0/"
+      }
+    ],
+    "tiles": "https://basemaps.linz.govt.nz/v1/tiles/aerial/WebMercatorQuad/{z}/{x}/{y}.webp?api={key}",
+    "key_env": "LINZ_BASEMAPS_KEY",
+    "note": "NZ only. Free key from basemaps.linz.govt.nz (standard keys expire after 90 days); for a public app ask basemaps@linz.govt.nz for a free non-expiring developer key.",
+    "probe": {
+      "z": 12,
+      "x": 4049,
+      "y": 2522
+    }
+  },
+  "esri_imagery": {
+    "title": "Esri World Imagery",
+    "text": "Satellite and aerial imagery from Esri World Imagery (ArcGIS Location Platform). Powered by Esri. Sources: Esri, Maxar, Earthstar Geographics, and the GIS User Community.",
+    "map": "Powered by Esri | Sources: Esri, Maxar, Earthstar Geographics, and the GIS User Community",
+    "links": [
+      {
+        "id": "esri",
+        "label": "Esri World Imagery",
+        "url": "https://www.arcgis.com/home/item.html?id=10df2279f9684e4a9f6a7f08febac2a9"
+      }
+    ],
+    "tiles": "https://ibasemaps-api.arcgis.com/arcgis/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}?token={key}",
+    "key_env": "ARCGIS_API_KEY",
+    "note": "Worldwide. API key from an ArcGIS Location Platform account (developers.arcgis.com); 2M basemap tiles/month free. Note the {z}/{y}/{x} order. The ibasemaps imagery endpoint answers 200 even for a fake token, so the start-up check validates the key against the Basemap Styles service instead (probe_url).",
+    "probe": {
+      "z": 12,
+      "x": 4049,
+      "y": 2522
+    },
+    "probe_url": "https://basemapstyles-api.arcgis.com/arcgis/rest/services/styles/v2/styles/arcgis/navigation?token={key}"
+  },
+  "linz_topo": {
+    "title": "LINZ topographic map",
+    "text": "NZ Topo50/Topo250 topographic maps from LINZ Basemaps, sourced from Toitū Te Whenua Land Information New Zealand and licensed for reuse under CC BY 4.0.",
+    "map": "Topographic map © LINZ, CC BY 4.0",
+    "links": [
+      {
+        "id": "linz_basemaps",
+        "label": "LINZ Basemaps",
+        "url": "https://basemaps.linz.govt.nz/"
+      },
+      {
+        "id": "ccby",
+        "label": "CC BY 4.0",
+        "url": "https://creativecommons.org/licenses/by/4.0/"
+      }
+    ],
+    "tiles": "https://basemaps.linz.govt.nz/v1/tiles/topo-raster/WebMercatorQuad/{z}/{x}/{y}.webp?api={key}",
+    "key_env": "LINZ_BASEMAPS_KEY",
+    "probe": {
+      "z": 12,
+      "x": 4049,
+      "y": 2522
+    },
+    "note": "LINZ's vector styles (topographic, topolite) are not served as raster tiles; topo-raster (NZ Topo50) is."
+  },
+  "esri_streets": {
+    "title": "Esri Streets",
+    "text": "Street map from the ArcGIS Static Basemap Tiles service. Powered by Esri. Sources: Esri, TomTom, Garmin, FAO, NOAA, USGS, © OpenStreetMap contributors, and the GIS User Community.",
+    "map": "Powered by Esri | Sources: Esri, TomTom, Garmin, FAO, NOAA, USGS, © OpenStreetMap contributors, and the GIS User Community",
+    "links": [
+      {
+        "id": "esri_static",
+        "label": "ArcGIS basemaps",
+        "url": "https://developers.arcgis.com/rest/static-basemap-tiles/"
+      }
+    ],
+    "tiles": "https://static-map-tiles-api.arcgis.com/arcgis/rest/services/static-basemap-tiles-service/v1/arcgis/streets/static/tile/{z}/{y}/{x}?token={key}",
+    "tile_size": 512,
+    "key_env": "ARCGIS_API_KEY",
+    "probe": {
+      "z": 12,
+      "x": 4049,
+      "y": 2522
+    },
+    "note": "Needs the key's 'Static basemap tiles' privilege (regenerate the key after enabling it). 512 px tiles, {z}/{y}/{x} order.",
+    "probe_url": "https://basemapstyles-api.arcgis.com/arcgis/rest/services/styles/v2/styles/arcgis/navigation?token={key}"
+  },
+  "hbrc_sdc": {
+    "title": "HBRC Stream Depletion Calculator",
+    "text": "Hawke's Bay Regional Council's stream depletion tool for the Heretaunga aquifer, built on stochastic response functions derived from the same groundwater model. It is the tool HBRC uses to assess stream depletion for water-take consents.",
+    "use": "Not used by this app and not affiliated with it — credited as the authoritative tool for the same question. It gives an uncertainty range and mapped depletion zones; this app instead runs the model itself, so it is not limited to the linear superposition a response function assumes.",
+    "links": [
+      {
+        "id": "sdc",
+        "label": "Stream Depletion Calculator",
+        "url": "https://hbrc-airquality-climate.shinyapps.io/stream-depletion-calculator/"
+      }
+    ]
+  }
+}

@@ -14,9 +14,16 @@ __pycache__/
 *.csv
 
 # Keep the bundled demo data in the image despite the rules above. Note: demo/
-# is gitignored (not committed), but the Docker *build context* is the working
-# directory, not git - so as long as demo/ exists locally when you run
-# `docker build`, it is copied into the image. Generate it first with
-# scripts/make_demo.py on a machine that has flopy.
+# is gitignored (not committed), but the Docker *build context* comes from the
+# working tree, not from git - so as long as demo/ exists on disk when you run
+# `docker build`, it is copied into the image.
+#
+# To get demo/ onto a machine that lacks it, COPY IT (rsync/scp from a machine
+# that has it - DEPLOYMENT.md, "Transferring the demo to a remote server").
+# scripts/make_demo.py is NOT a general regeneration path: it derives the demo
+# by trimming a full source model (data/HPM.zip plus the .hds runs, tens of GB)
+# which is not present on a server or a fresh checkout. The shipped demo was
+# transferred, not rebuilt.
 !demo/
 !demo/**
+NEXT_STEPS.md

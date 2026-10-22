@@ -166,3 +166,16 @@ destabilising the working build.
   mass-balance / convergence) alongside the heads visualizer. Recommended as a
   `page_navbar` page in THIS app (one image/env), not a separate container.
   Existing `.lst` app is `../RGWchart` (rocker/shiny-verse + reticulate).
+
+## Review bundles 2026-10-22 (branch usg-review-bundle)
+- [x] **Open a review bundle by folder (local use).** `./run_app.sh --bundles
+  <folder>` / `CF_BUNDLE_ROOT`; layers with different cells, calendar dates
+  from `Times.csv`, Difference (run − baseline) next to Drawdown, baseline line
+  on the hydrograph. See README "Review bundles".
+- [x] **Observed vs simulated** (Sites + Targets), **CLN view** (head / head −
+  bed, requested vs delivered pumping), **parameter field maps** (run / prior /
+  ratio, log scale for K).
+- [x] **Layout:** the page scrolls instead of clipping the map; map layers are
+  created in draw order so points are never hidden under cells.
+- [ ] **Ensemble views on unstructured grids** (P10/P50/P90 with the same keys)
+  — after a run with a usable posterior.

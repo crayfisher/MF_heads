@@ -15,5 +15,3 @@ get_lst <- function(file)  {
   return(df)}
 
 
-#fn <- "D:/Pawel/modelling/RES2021/LY_RES2021_v2/mf/run/mf_cal.hds"
-#test5 <- get_times_u_df(fn)

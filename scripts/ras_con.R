@@ -63,6 +63,3 @@ leaflet() %>%
 
 
 
-# domiain_sf <- st_read("D:/Pawel/modelling/RES2021/LY_RES2021_v2/IN/shp/domain/domain.shp")
-# con_test <- con_f(ras_tes,seq(489,520,1),"cont.shp",28351,domiain_sf)
-# plot(con_test)

@@ -48,6 +48,24 @@ message("[Startup] CONDA_ENV = ", CONDA_ENV, " | PROC_PREFIX = '", PROC_PREFIX, 
 # NB: it lives in lib/, not R/ — Shiny auto-sources R/*.R *before* the library()
 # calls above, which would break bs_theme(). See lib/cf_theme.R header.
 source("lib/cf_theme.R")
+source("lib/cf_credits.R")    # shared attributions (lib/cf_credits.json)
+source("lib/cf_charts.R")     # shared plotly styling (cf_plotly_style)
+source("scripts/review_bundle.R")  # review bundles: open a run's tables by folder
+
+# Folder holding review bundles, from CF_BUNDLE_ROOT ("" = feature off). Read
+# once at start-up; the bundle picker and the review panels exist only when set.
+BUNDLE_ROOT <- rb_root()
+
+# Base maps: Esri World Imagery (needs ARCGIS_API_KEY) and OpenStreetMap. An
+# option whose key is missing is left out, so without a key the app still has
+# a street map. URLs and attributions live in lib/cf_credits.json.
+# Esri (ARCGIS_API_KEY; 2M tiles/month free): World Imagery and Streets. Each
+# is probed once at start-up; OpenStreetMap is added only if Esri Streets is
+# unavailable, so a keyless install still has a street map.
+CF_BASEMAPS <- cf_basemap_choices(
+  c("Satellite (Esri)" = "esri_imagery", "Streets (Esri)" = "esri_streets"),
+  street = "esri_streets", fallback = c("Streets (OpenStreetMap)" = "osm"))
+cf_basemap_choice <- function(x) if (is.null(x) || !x %in% CF_BASEMAPS) CF_BASEMAPS[[1]] else x
 
 # This app uses the shared base CSS as-is (no app-specific additions).
 custom_css <- cf_custom_css
@@ -61,6 +79,10 @@ custom_css <- cf_custom_css
 APP_REPO <- "https://github.com/crayfisher/MF_heads"
 
 ui <- page_sidebar(
+  # Let the main column scroll instead of squeezing every card into one screen:
+  # with the charts below it, a fillable page clipped the map to a strip.
+  fillable = FALSE,
+  tags$head(cf_favicon_tag()),   # Crayfisher logo in the browser tab (lib/cf_theme.R)
   title = tagList(
     div(class = "app-title-wrap",
       tags$span("MODFLOW heads visualiser", class = "app-title-text"),
@@ -103,11 +125,6 @@ ui <- page_sidebar(
           tags$p(style = "margin-bottom: 8px; color: #a99fce;",
             "Interactive, web-native Shiny-based 2D visualisation of hydraulic ",
             "heads, drawdown distributions, and hydrographs."),
-          tags$p(style = "margin-bottom: 8px; color: #a99fce;",
-            "Powered by ",
-            tags$a("FloPy", href = "https://github.com/modflowpy/flopy",
-                   target = "_blank", rel = "noopener"),
-            " — Python scripting for MODFLOW."),
           div(style = "display: flex; flex-wrap: wrap; gap: 8px;",
             tags$a(icon("github"), " Source code", href = APP_REPO,
                    target = "_blank", rel = "noopener",
@@ -117,12 +134,15 @@ ui <- page_sidebar(
                    class = "btn btn-outline-info btn-sm")
           ),
           div(style = "font-size: 0.75rem; color: #a99fce; margin-top: 8px;",
-            "Found a problem or have a request? Please open an issue on GitHub.")
+            "Found a problem or have a request? Please open an issue on GitHub."),
+          cf_credits_ui(c("flopy", unname(CF_BASEMAPS)))
         )
       ),
       accordion_panel(
         "1. Data Uploads",
         icon = icon("cloud-upload-alt"),
+        # Review bundle picker: only when CF_BUNDLE_ROOT is set (local use).
+        uiOutput("bundle_ui"),
         selectInput("model_type", "Model Type:",
                     choices = c("MF-USG" = "usg", "MF6" = "mf6", "MODFLOW-2005" = "mf2005")),
         div(style = "display: flex; align-items: center; gap: 10px;",
@@ -167,6 +187,7 @@ ui <- page_sidebar(
         "2. File Status",
         icon = icon("check-circle"),
         div(style="font-size: 0.85em; line-height: 1.8;",
+          uiOutput("status_bundle"),
           uiOutput("status_grd"),
           uiOutput("status_hds"),
           uiOutput("status_scenario"),
@@ -201,9 +222,22 @@ ui <- page_sidebar(
       accordion_panel(
         "5. Visual Settings",
         icon = icon("palette"),
-        radioButtons("data_display", "Display Variable:", choices = c("Heads", "Drawdown"), selected = "Heads", inline = TRUE),
+        radioButtons("data_display", "Display Variable:",
+                     choices = c("Heads", "Drawdown", "Difference", if (nzchar(BUNDLE_ROOT)) "Field"),
+                     selected = "Heads", inline = TRUE),
+        div(style = "font-size: 0.78rem; color: #a99fce; margin: -8px 0 8px;",
+            "Drawdown / Difference need a baseline. Drawdown = baseline − run; Difference = run − baseline.",
+            if (nzchar(BUNDLE_ROOT)) " Field = a parameter field from a review bundle's Fields.parquet."),
+        # Parameter field maps (review bundles): field, which run, log colours.
+        conditionalPanel("input.data_display == 'Field'",
+          selectInput("field_name", "Field:", choices = NULL),
+          radioButtons("field_run", "Values:", choices = c("run", "prior", "ratio"), inline = TRUE),
+          checkboxInput("field_log", "Log colour scale", value = TRUE)),
         radioButtons("render_style", "Map Style:", choices = c("Color Flood", "Contours", "Both"), selected = "Color Flood", inline = TRUE),
-        checkboxInput("show_basemap", "Show Satellite Basemap", value = TRUE),
+        checkboxInput("show_basemap", "Show Basemap", value = TRUE),
+        conditionalPanel("input.show_basemap",
+          radioButtons("basemap", NULL, choices = CF_BASEMAPS,
+                       selected = CF_BASEMAPS[[1]], inline = TRUE)),
         checkboxInput("exclude_999", "Exclude Inactive/Dry Cells (999 or 1e30)", value = TRUE),
         # Default OFF so the ramp is pinned to data semantics consistently for
         # every model: turbo runs blue->red and domain_pal() is always
@@ -214,6 +248,20 @@ ui <- page_sidebar(
         numericInput("min_val", "Color Min Value:", value = NA),
         numericInput("max_val", "Color Max Value:", value = NA),
         sliderInput("opacity", "Cell Fill Opacity:", min = 0, max = 1, value = 0.8, step = 0.1)
+      ),
+      # Review-bundle layers (local use; see scripts/review_bundle.R).
+      if (nzchar(BUNDLE_ROOT)) accordion_panel(
+        "6. Review Layers",
+        icon = icon("binoculars"),
+        uiOutput("review_hint"),
+        checkboxInput("show_sites", "Show target sites", value = TRUE),
+        selectizeInput("site_groups", "Site groups:", choices = NULL, multiple = TRUE),
+        selectInput("target_site", "Site (or click one on the map):", choices = NULL),
+        hr(style = "border-top: 1px solid rgba(255,255,255,0.12); margin: 10px 0;"),
+        checkboxInput("show_cln", "Show CLN nodes", value = TRUE),
+        radioButtons("cln_colour", "Colour CLN nodes by (selected stress period):",
+                     choices = c("Head", "Head - bed"), selected = "Head", inline = TRUE),
+        selectInput("cln_node_pick", "CLN node (or click one on the map):", choices = NULL)
       )
     )
   ),
@@ -235,14 +283,27 @@ ui <- page_sidebar(
           )
         )
       ),
-      rdeckOutput("my_rdeck", height = "65vh")
+      div(style = "position: relative;",
+        rdeckOutput("my_rdeck", height = "65vh"),
+        conditionalPanel("input.show_basemap", uiOutput("map_attribution")))
     ),
     accordion(
+      id = "charts",
       open = "Temporal Hydrograph Plot",
       accordion_panel(
         "Temporal Hydrograph Plot",
         icon = icon("chart-line"),
         plotlyOutput("chart", height = "280px")
+      ),
+      if (nzchar(BUNDLE_ROOT)) accordion_panel(
+        "Observed vs Simulated",
+        icon = icon("bullseye"),
+        plotlyOutput("target_chart", height = "420px")
+      ),
+      if (nzchar(BUNDLE_ROOT)) accordion_panel(
+        "CLN Node: Head and Pumping",
+        icon = icon("droplet"),
+        plotlyOutput("cln_chart", height = "380px")
       )
     )
   )
@@ -255,6 +316,9 @@ ui <- page_sidebar(
 # ui <- secure_app(ui)
 
 server <- function(input, output, session) {
+  # The chosen base map's attribution, on the map itself.
+  output$map_attribution <- renderUI(cf_map_attribution(cf_basemap_choice(input$basemap)))
+
 
   # res_auth <- secure_server(
   #   check_credentials = check_credentials(credentials)
@@ -360,7 +424,13 @@ server <- function(input, output, session) {
   })
   
   output$slice_text <- renderText({
-    paste("Layer ", input$select_layer, " / SP ", input$select_time, sep="")
+    # Show the period's calendar date too when the timeline has one.
+    when <- tryCatch({
+      td <- time_df()
+      d <- td$date[td$SP == as.integer(input$select_time)]
+      if (length(d) == 1 && !is.na(d)) paste0(" (", format(d, "%Y-%m-%d"), ")") else ""
+    }, error = function(e) "")
+    paste0("Layer ", input$select_layer, " / SP ", input$select_time, when)
   })
   
   output$node_text <- renderText({
@@ -458,6 +528,11 @@ server <- function(input, output, session) {
   })
 
   # Status indicators
+  output$status_bundle <- renderUI({
+    req(bundle_dir())
+    span(icon("folder-open"), " Bundle: ", rb_summary(bundle_manifest(), bundle_dir()),
+         style = "color:#32fbe2")
+  })
   output$status_grd <- renderUI({
     if (is.null(grid_path())) span(icon("times-circle"), " Grid missing", style="color:#ef4444")
     else span(icon("check-circle"), " Grid loaded", style="color:#00bc8c")
@@ -498,6 +573,7 @@ server <- function(input, output, session) {
     # Manual parquet upload is grid-type agnostic; mark it so we don't assume
     # the model_type dropdown (which only governs ZIP uploads) applies here.
     loaded_model_type("manual")
+    bundle_dir(NULL)
     # A manual upload defines its own heads; drop any scenario override.
     scenario_heads(NULL)
     scenario_times(NULL)
@@ -507,6 +583,7 @@ server <- function(input, output, session) {
   # main thread once the background job resolves.
   apply_processed_model <- function(out_dir, mtype = NULL) {
     loaded_model_type(mtype)
+    bundle_dir(NULL)
     # Clear any baseline + scenario override from a previously loaded model (the
     # demo loader re-sets the baseline afterwards if the demo bundles one); avoids
     # a stale drawdown reference or scenario heads carrying over to a new model.
@@ -585,24 +662,8 @@ server <- function(input, output, session) {
       div(style = "font-size: 0.78rem; color: #a99fce;",
           "Pre-processed sample model for demonstration - loads instantly."),
       if (any(tolower(dirs) == "hpm")) {
-        div(style = "font-size: 0.72rem; color: #a99fce; margin-top: 8px; line-height: 1.35; border-top: 1px solid rgba(169,159,206,0.25); padding-top: 8px;",
-          tags$strong("HPM", style = "color: #32fbe2;"),
-          " - Heretaunga Plains groundwater model, developed by Hawkes Bay ",
-          "Regional Council, NZ. Documented in the Heretaunga Aquifer ",
-          "Groundwater Model Development Report:",
-          tags$br(),
-          "Rakowski P., Knowling M. (2018) ",
-          tags$em("4997 Heretaunga Aquifer Groundwater Model Development Report"),
-          ". ",
-          tags$a("Executive summary", target = "_blank", rel = "noopener",
-                 style = "color: #32fbe2;",
-                 href = "https://www.hbrc.govt.nz/assets/Document-Library/Publications-Database/4999-Executive-summary-of-Heretaunga-Aquifer-Groundwater-Model-Development-Report1.pdf"),
-          " | ",
-          tags$a("full report", target = "_blank", rel = "noopener",
-                 style = "color: #32fbe2;",
-                 href = "https://www.hbrc.govt.nz/assets/Document-Library/Publications-Database/4997-Heretaunga-Model-Groundwater-Development-Report.pdf"),
-          "."
-        )
+        # The wells/scenarios note does not apply to a heads viewer.
+        cf_credits_ui("hpm", show_use = FALSE)
       }
     )
   })
@@ -625,6 +686,83 @@ server <- function(input, output, session) {
     } else {
       baseline_parquet(NULL)
     }
+  })
+
+  # --- Review bundles (local use) -------------------------------------------
+  # A bundle is a folder of tables exported from one model run (see
+  # scripts/review_bundle.R). Opening one is offered only when CF_BUNDLE_ROOT
+  # names a folder on this machine; the hosted app does not set it, so no
+  # visitor can browse the server's disk. Bundles are read in place.
+  bundle_root <- BUNDLE_ROOT
+  bundle_dir <- reactiveVal(NULL)        # absolute path of the open bundle
+  bundle_manifest <- reactiveVal(NULL)   # its manifest.json as a list
+  bundle_rescan <- reactiveVal(0)
+
+  output$bundle_ui <- renderUI({
+    if (!nzchar(bundle_root)) return(NULL)
+    bundle_rescan()
+    found <- rb_list(bundle_root)
+    tagList(
+      div(strong(icon("folder-open"), " Open Review Bundle"),
+          style = "font-size: 0.9rem; margin-bottom: 6px;"),
+      if (length(found) == 0) {
+        div(style = "font-size: 0.78rem; color: #f59e0b; margin-bottom: 8px;",
+            "No bundles (folders with manifest.json) under ", tags$code(bundle_root), ".")
+      } else {
+        div(style = "display: flex; gap: 8px; align-items: flex-end;",
+          div(style = "flex-grow: 1;",
+              selectInput("bundle_choice", NULL, choices = found, width = "100%")),
+          actionButton("open_bundle", "Open", icon = icon("play"),
+                       class = "btn-info btn-sm", style = "margin-bottom: 1rem;"))
+      },
+      div(style = "font-size: 0.78rem; color: #a99fce; margin: -8px 0 8px;",
+          "Folders under ", tags$code(bundle_root), " (CF_BUNDLE_ROOT). ",
+          actionLink("rescan_bundles", "Rescan")),
+      hr(style = "border-top: 1px solid rgba(255,255,255,0.12); margin: 10px 0;")
+    )
+  })
+  observeEvent(input$rescan_bundles, bundle_rescan(bundle_rescan() + 1))
+
+  apply_bundle <- function(dir) {
+    m <- rb_manifest(dir)
+    loaded_model_type("bundle")
+    scenario_heads(NULL)
+    scenario_times(NULL)
+    files <- c("Grid.parquet", "Heads.parquet", "Times.csv")
+    uploaded_files(data.frame(name = files, datapath = file.path(dir, files),
+                              stringsAsFactors = FALSE))
+    bl <- file.path(dir, "Heads_baseline.parquet")
+    baseline_parquet(if (file.exists(bl)) bl else NULL)
+
+    cu <- rb_epsg(m$crs)
+    model_crs(cu)
+    updateCheckboxInput(session, "show_basemap", value = cu != "NONE")
+    # Bundles write dry / inactive cells as NA, so no head value is a sentinel
+    # (is_inactive() still drops |h| >= 1e29 in case one slips through).
+    model_sentinels(numeric(0))
+    model_time_units(m$time_units %||% "days")
+    sd <- tryCatch(as.Date(substr(m$start_date %||% "", 1, 10)), error = function(e) NA)
+    updateDateInput(session, "start_date", value = if (is.na(sd)) as.Date("2019-06-01") else sd)
+
+    bundle_manifest(m)
+    bundle_dir(dir)
+    # A view the new bundle cannot fill (no baseline, no fields) falls back to
+    # Heads rather than keeping the previous bundle's title over an empty map.
+    disp <- isolate(input$data_display)
+    if ((disp %in% c("Drawdown", "Difference") && !file.exists(bl)) ||
+        (identical(disp, "Field") && !rb_has(dir, "Fields.parquet"))) {
+      updateRadioButtons(session, "data_display", selected = "Heads")
+    }
+    showNotification(paste0("Opened bundle: ", m$title %||% basename(dir),
+                            if (file.exists(bl)) " (with baseline: Drawdown / Difference available)." else "."),
+                     type = "message")
+  }
+
+  observeEvent(input$open_bundle, {
+    dir <- tryCatch(rb_resolve(bundle_root, input$bundle_choice),
+                    error = function(e) { showNotification(conditionMessage(e), type = "error"); NULL })
+    req(dir)
+    apply_bundle(dir)
   })
 
   observeEvent(input$upload_zip, {
@@ -790,14 +928,12 @@ server <- function(input, output, session) {
   })
 
   # Grid GeoParquet Loading. Standardize the geometry column name to "geometry"
-  # so rdeck's get_polygon = geometry works (older parquets use "geom").
+  # so rdeck's get_polygon = geometry works (older parquets use "geom"), and
+  # recover the CRS that sfarrow cannot read from GeoParquet 1.0 PROJJSON
+  # (scripts/review_bundle.R).
   grid_sf <- reactive({
     req(grid_path())
-    g <- st_read_parquet(grid_path())
-    if (!identical(attr(g, "sf_column"), "geometry")) {
-      g <- st_sf(st_drop_geometry(g), geometry = st_geometry(g))
-    }
-    g
+    rb_read_sf(grid_path(), fallback_epsg = isolate(model_crs()))
   })
   
   # Cached attribute table (no geometry) for node lookups - avoids copying the
@@ -832,6 +968,10 @@ server <- function(input, output, session) {
     # (input may be NULL/blank during init -> as.POSIXct would error).
     start <- tryCatch(as.POSIXct(as.character(input$start_date)), error = function(e) NA)
     if (length(start) == 0 || is.na(start)) start <- as.POSIXct("1970-01-01")
+    # A timeline that carries its own calendar dates (a review bundle's
+    # date_end) is used as-is; otherwise date = start date + model time.
+    dates <- rb_times_dates(df)
+    if (!is.null(dates)) return(df %>% mutate(date = dates))
     df %>% mutate(date = start + lubridate::ddays(time_to_days(time, model_time_units())))
   })
   
@@ -873,20 +1013,32 @@ server <- function(input, output, session) {
     req(head_ds(), input$select_time, input$select_layer)
     sp_target <- as.integer(input$select_time)
     lay_target <- as.integer(input$select_layer)
+
+    # Field view: a parameter field on the selected layer takes the place of
+    # heads (column `h`, so the map and colour code below are shared).
+    if (identical(input$data_display, "Field")) {
+      d <- bundle_dir()
+      req(rb_has(d, "Fields.parquet"), input$field_name, input$field_run)
+      f <- rb_field_slice(d, input$field_name, input$field_run, lay_target)
+      if (field_is_log()) f$value[!is.na(f$value) & f$value <= 0] <- NA_real_
+      return(f %>% transmute(SP = sp_target, layer, nodenumberL1, h = value))
+    }
     
     # Push query down to Arrow / DuckDB
     h_df <- head_ds() %>%
       filter(SP == sp_target, layer == lay_target) %>%
       collect()
       
-    if (input$data_display == "Drawdown" && !is.null(hds2_path())) {
+    if (input$data_display %in% c("Drawdown", "Difference") && !is.null(hds2_path())) {
       h2_df <- open_dataset(hds2_path()) %>%
         filter(SP == sp_target, layer == lay_target) %>%
         collect()
       if(nrow(h2_df) > 0) {
         h_df <- h_df %>% inner_join(h2_df %>% rename(h_base = h), by = c("layer", "nodenumberL1", "SP"))
-        # Drawdown = Baseline - Scenario (keep inactive cells flagged as 999)
-        h_df$h <- ifelse(is_inactive(h_df$h) | is_inactive(h_df$h_base), 999, h_df$h_base - h_df$h)
+        # Drawdown = baseline - run; Difference = run - baseline. A cell that is
+        # inactive/dry in either run has no meaningful difference -> NA.
+        h_df$h <- ifelse(is_inactive(h_df$h) | is_inactive(h_df$h_base), NA_real_,
+                         rb_compare(h_df$h, h_df$h_base, input$data_display))
       }
     }
     
@@ -959,6 +1111,7 @@ server <- function(input, output, session) {
 
     c_min <- min(vals, na.rm=TRUE)
     c_max <- max(vals, na.rm=TRUE)
+    if (field_is_log() && c_max <= c_min) c_max <- c_min * 10   # one-value field
     
     if (isTRUE(input$lim_val)) {
       if (!is.na(input$min_val)) c_min <- input$min_val
@@ -1036,11 +1189,31 @@ server <- function(input, output, session) {
       bbox["ymin"] <- bbox["ymin"] - 1e-4
     }
     
+    # deck.gl draws layers in the order they were FIRST added, and the proxy
+    # observers below run in no fixed order. Create every layer here, empty,
+    # bottom to top, so cells never end up drawn over sites or CLN nodes.
+    no_poly <- st_sf(geometry = st_sfc(crs = 4326))
+    no_pts <- st_sf(geometry = st_sfc(crs = 4326))
     rdeck(
       map_style = NULL, # Mapbox needs a token, so we skip it
       initial_bounds = bbox,
       controller = TRUE
-    )
+    ) %>%
+      add_tile_layer(id = "basemap", data = cf_basemap_url(cf_basemap_choice(isolate(input$basemap))),
+                     visible = FALSE, pickable = FALSE) %>%
+      add_polygon_layer(id = "head_layer", data = no_poly, get_polygon = geometry) %>%
+      add_path_layer(id = "contour_lines", data = no_poly, get_path = geometry) %>%
+      add_text_layer(id = "contour_labels", data = st_sf(label = character(), geometry = st_sfc(crs = 4326)),
+                     get_position = geometry, get_text = label) %>%
+      add_path_layer(id = "cln_lines", data = no_poly, get_path = geometry) %>%
+      add_scatterplot_layer(id = "cln_points", data = no_pts, get_position = geometry) %>%
+      add_path_layer(id = "cln_selected_line", data = no_poly, get_path = geometry,
+                     visibility_toggle = FALSE) %>%
+      add_scatterplot_layer(id = "cln_selected_point", data = no_pts, get_position = geometry,
+                            visibility_toggle = FALSE) %>%
+      add_scatterplot_layer(id = "sites_layer", data = no_pts, get_position = geometry) %>%
+      add_scatterplot_layer(id = "site_selected", data = no_pts, get_position = geometry,
+                            visibility_toggle = FALSE)
   })
   
   # Dynamic Map Layer updates
@@ -1060,10 +1233,19 @@ server <- function(input, output, session) {
     
     if (has_heads) {
       req(domain_pal())
-      my_breaks <- pretty(domain_pal(), n = 10)
+      log_scale <- field_is_log() && domain_pal()[1] > 0
+      my_breaks <- if (log_scale) rb_log_breaks(domain_pal()) else pretty(domain_pal(), n = 10)
       my_palette <- if(isTRUE(input$rev_colors)) rev(viridisLite::turbo(length(my_breaks) + 1)) else viridisLite::turbo(length(my_breaks) + 1)
       
-      fill_scale <- if (input$color_mode == "Discrete Bins") {
+      fill_scale <- if (log_scale && input$color_mode != "Discrete Bins") {
+        scale_color_log(
+          col = h_color,
+          palette = my_palette,
+          limits = domain_pal(),
+          breaks = my_breaks,
+          na_color = "#00000000"
+        )
+      } else if (input$color_mode == "Discrete Bins") {
         scale_color_threshold(
           col = h_color,
           palette = my_palette,
@@ -1098,8 +1280,9 @@ server <- function(input, output, session) {
     
     proxy <- rdeck_proxy("my_rdeck") %>%
       add_tile_layer(
-        id = "google_sat",
-        data = "https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}",
+        id = "basemap",
+        data = cf_basemap_url(cf_basemap_choice(input$basemap)),   # lib/cf_credits.json
+        tile_size = cf_basemap_tile_size(cf_basemap_choice(input$basemap)),
         visible = isTRUE(input$show_basemap),
         pickable = FALSE
       )
@@ -1188,14 +1371,279 @@ server <- function(input, output, session) {
     rdeck_proxy("my_rdeck", initial_bounds = bbox)
   })
 
-  # Handle map clicks
+  # Handle map clicks. The click names the layer that was hit: a cell picks
+  # the hydrograph node, a target site picks the observed-vs-simulated site.
   observeEvent(input$my_rdeck_click, {
     info <- input$my_rdeck_click
-    if (!is.null(info) && !is.null(info$object)) {
+    if (is.null(info) || is.null(info$object)) return()
+    layer_id <- info$layer$id %||% "head_layer"
+    if (identical(layer_id, "sites_layer") && !is.null(info$object$site)) {
+      updateSelectInput(session, "target_site", selected = info$object$site)
+      accordion_panel_open("charts", "Observed vs Simulated")
+    } else if (layer_id %in% c("cln_lines", "cln_points") && !is.null(info$object$cln_node)) {
+      updateSelectInput(session, "cln_node_pick", selected = as.character(info$object$cln_node))
+      accordion_panel_open("charts", "CLN Node: Head and Pumping")
+    } else if (identical(layer_id, "head_layer") && !is.null(info$object$nodenumber)) {
       updateNumericInput(session, "nodenumber", value = info$object$nodenumber)
     }
   })
+
+  # --- Review bundle: target sites and observed vs simulated ---------------
+  # NULL (not an error) when no bundle is open or it has no such table, so the
+  # map layers below can clear themselves.
+  bundle_sites <- reactive({
+    d <- bundle_dir()
+    if (!rb_has(d, "Sites.parquet")) return(NULL)
+    rb_read_sf(file.path(d, "Sites.parquet"), model_crs()) %>% st_transform(4326)
+  })
+  bundle_observations <- reactive({
+    d <- bundle_dir()
+    if (!rb_has(d, "Observations.parquet")) return(NULL)
+    arrow::read_parquet(file.path(d, "Observations.parquet"))
+  })
+  bundle_targets <- reactive({
+    d <- bundle_dir()
+    if (!rb_has(d, "Targets.parquet")) return(NULL)
+    arrow::read_parquet(file.path(d, "Targets.parquet"))
+  })
+
+  output$review_hint <- renderUI({
+    d <- bundle_dir()
+    msg <- if (is.null(d)) "Open a review bundle (1. Data Uploads) to use these layers."
+           else if (is.null(bundle_sites())) "This bundle has no Sites.parquet."
+    if (!is.null(msg)) div(style = "font-size: 0.78rem; color: #a99fce; margin-bottom: 8px;", msg)
+  })
+
+  observeEvent(bundle_sites(), {
+    groups <- sort(unique(as.character(bundle_sites()$group)))
+    updateSelectizeInput(session, "site_groups", choices = groups, selected = groups)
+  }, ignoreNULL = FALSE)
+
+  sites_shown <- reactive({
+    s <- bundle_sites()
+    if (is.null(s)) return(NULL)
+    s[as.character(s$group) %in% (input$site_groups %||% character(0)), ]
+  })
+
+  observeEvent(sites_shown(), {
+    s <- sites_shown()
+    choices <- if (is.null(s)) character(0) else sort(as.character(s$site))
+    cur <- isolate(input$target_site)
+    updateSelectInput(session, "target_site", choices = choices,
+                      selected = if (isTRUE(cur %in% choices)) cur else choices[1])
+  }, ignoreNULL = FALSE)
+
+  # Sites on the map: one colour per group; the chosen site gets a yellow ring.
+  # Re-sent when the map is rebuilt (grid_outline) so a new bundle keeps them.
+  observe({
+    req(grid_outline())
+    s <- sites_shown()
+    show <- isTRUE(input$show_sites) && !is.null(s) && nrow(s) > 0
+    pts <- if (show) s %>% select(site, group, layer) %>% mutate(group = as.character(group)) else
+      st_sf(site = character(), group = character(), layer = integer(), geometry = st_sfc(crs = 4326))
+    sel <- pts[pts$site %in% input$target_site, ]
+    # Colours keyed on every group in the bundle, so filtering keeps them.
+    all_groups <- sort(unique(as.character(bundle_sites()$group)))
+    proxy <- rdeck_proxy("my_rdeck")
+    if (nrow(pts) > 0) {
+      proxy <- proxy %>% add_scatterplot_layer(
+        id = "sites_layer", name = "Target sites", data = pts,
+        get_position = geometry, radius_units = "pixels", get_radius = 6,
+        get_fill_color = scale_color_category(col = group, palette = rb_group_colours(all_groups),
+                                              levels = all_groups),
+        stroked = TRUE, get_line_color = "#150726", line_width_units = "pixels", get_line_width = 1,
+        pickable = TRUE, auto_highlight = TRUE, highlight_color = "#ffffff80",
+        tooltip = c(site, group, layer))
+    } else {
+      proxy <- proxy %>% add_scatterplot_layer(id = "sites_layer", data = pts, get_position = geometry)
+    }
+    proxy %>% add_scatterplot_layer(
+      id = "site_selected", data = sel, get_position = geometry, radius_units = "pixels",
+      get_radius = 11, filled = FALSE, stroked = TRUE, get_line_color = "#ffd166",
+      line_width_units = "pixels", get_line_width = 3, pickable = FALSE,
+      visibility_toggle = FALSE)
+  })
+
+  output$target_chart <- renderPlotly({
+    tg_all <- bundle_targets()
+    site <- input$target_site
+    msg <- if (is.null(bundle_dir())) "Open a review bundle to compare observed and simulated values."
+           else if (is.null(tg_all)) "This bundle has no Targets.parquet."
+           else if (!isTruthy(site)) "Pick a site on the map or in 6. Review Layers."
+    if (is.null(msg)) {
+      tg <- rb_site_targets(tg_all, site)
+      if (nrow(tg) == 0) msg <- paste0("Site ", site, " has no targets.")
+    }
+    if (!is.null(msg)) {
+      return(cf_plotly_style(plotly::plotly_empty(type = "scatter", mode = "markers") %>%
+        plotly::layout(title = list(text = msg, y = 0.5, font = list(color = CF_PLOT_MUTED, size = 13))),
+        legend = NA))
+    }
+    grp <- unique(as.character(tg$group))
+    # Measurements behind the targets (Observations.parquet), with the site's
+    # simulated head in every period to compare them with.
+    obs <- rb_site_observations(bundle_observations(), site)
+    sim <- NULL
+    if (!is.null(obs)) {
+      s_row <- sf::st_drop_geometry(bundle_sites())
+      s_row <- s_row[s_row$site == site, , drop = FALSE]
+      g <- grid_attrs()
+      if (nrow(s_row) > 0 && all(c("nodenumber", "layer", "nodenumberL1") %in% names(g))) {
+        sim <- rb_site_series(bundle_dir(), s_row[1, ], g[, c("nodenumber", "layer", "nodenumberL1")])
+      }
+      if (!is.null(sim)) sim <- merge(rb_period_axis(bundle_times())$df, sim, by = "SP")
+    }
+    rb_targets_plot(tg, title = paste0("Site ", site, if (length(grp) == 1) paste0(" (", grp, ")"),
+                                       " — ", rb_weight_label(tg$weight)),
+                    obs = obs, sim = sim)
+  })
+
+  # --- Review bundle: CLN nodes, their heads and pumping --------------------
+  bundle_cln <- reactive({
+    d <- bundle_dir()
+    if (!rb_has(d, "CLN_nodes.parquet")) return(NULL)
+    rb_read_sf(file.path(d, "CLN_nodes.parquet"), model_crs()) %>% st_transform(4326)
+  })
+  bundle_cln_heads <- reactive({
+    d <- bundle_dir()
+    if (!rb_has(d, "CLN_heads.parquet")) return(NULL)
+    arrow::read_parquet(file.path(d, "CLN_heads.parquet"))
+  })
+  bundle_pumping <- reactive({
+    d <- bundle_dir()
+    if (!rb_has(d, "Pumping.parquet")) return(NULL)
+    arrow::read_parquet(file.path(d, "Pumping.parquet"))
+  })
+  bundle_times <- reactive({
+    d <- bundle_dir()
+    if (is.null(d)) return(NULL)
+    readr::read_csv(file.path(d, "Times.csv"), show_col_types = FALSE)
+  })
+  cln_beds <- reactive({
+    if (is.null(bundle_cln()) || is.null(bundle_times())) return(NULL)
+    rb_cln_bed(bundle_cln(), bundle_times())
+  })
+
+  observeEvent(bundle_cln(), {
+    cl <- bundle_cln()
+    choices <- if (is.null(cl)) character(0) else {
+      a <- st_drop_geometry(cl)
+      lab <- if ("name" %in% names(a)) paste0(a$name, " (node ", a$cln_node, ")") else paste("node", a$cln_node)
+      setNames(as.character(a$cln_node), lab)
+    }
+    updateSelectInput(session, "cln_node_pick", choices = choices, selected = choices[1])
+  }, ignoreNULL = FALSE)
+
+  # CLN nodes on the map, coloured by head or head - bed in the selected
+  # period: trench sections as lines, bores as points, one colour scale. Nodes
+  # switched off that period are grey.
+  observe({
+    req(grid_outline())
+    cl <- bundle_cln()
+    ch <- bundle_cln_heads()
+    show <- isTRUE(input$show_cln) && !is.null(cl) && !is.null(ch) && !is.null(cln_beds())
+    empty <- st_sf(geometry = st_sfc(crs = 4326))
+    proxy <- rdeck_proxy("my_rdeck")
+    if (!show) {
+      proxy %>%
+        add_path_layer(id = "cln_lines", data = empty, get_path = geometry) %>%
+        add_scatterplot_layer(id = "cln_points", data = empty, get_position = geometry) %>%
+        add_path_layer(id = "cln_selected_line", data = empty, get_path = geometry) %>%
+        add_scatterplot_layer(id = "cln_selected_point", data = empty, get_position = geometry)
+      return()
+    }
+    mode <- input$cln_colour %||% "Head"
+    v <- rb_cln_period_values(ch, cln_beds(), as.integer(input$select_time), mode)
+    keep <- intersect(c("cln_node", "name", "kind"), names(cl))
+    m <- cl[, keep] %>% left_join(v, by = "cln_node") %>%
+      mutate(across(c(h, bed, value), ~ round(.x, 3)))
+    rng <- range(m$value, na.rm = TRUE)
+    if (!all(is.finite(rng))) rng <- c(0, 1)
+    if (rng[1] == rng[2]) rng <- rng + c(-0.5, 0.5)
+    colour_by <- function(legend) scale_color_linear(
+      col = value, palette = viridisLite::turbo(9), limits = rng, na_color = "#9ca3afaa",
+      col_label = if (mode == "Head") "CLN head (m)" else "CLN head - bed (m)", legend = legend)
+    is_line <- as.character(st_geometry_type(m)) %in% c("LINESTRING", "MULTILINESTRING")
+    lines <- m[is_line, ]
+    pts <- m[!is_line, ]
+    sel <- m[as.character(m$cln_node) %in% input$cln_node_pick, ]
+    tt <- rlang::expr(c(!!!rlang::syms(c(keep, "h", "bed", "value"))))
+    proxy %>%
+      add_path_layer(id = "cln_lines", name = "CLN lines", data = lines, get_path = geometry,
+                     get_color = !!colour_by(TRUE), width_units = "pixels", get_width = 5,
+                     cap_rounded = TRUE, pickable = TRUE, auto_highlight = TRUE,
+                     highlight_color = "#ffffff80", tooltip = !!tt) %>%
+      add_scatterplot_layer(id = "cln_points", name = "CLN points", data = pts, get_position = geometry,
+                            get_fill_color = !!colour_by(nrow(lines) == 0), radius_units = "pixels",
+                            get_radius = 6, stroked = TRUE, get_line_color = "#150726",
+                            line_width_units = "pixels", get_line_width = 1, pickable = TRUE,
+                            auto_highlight = TRUE, highlight_color = "#ffffff80", tooltip = !!tt) %>%
+      add_path_layer(id = "cln_selected_line", data = sel[as.character(st_geometry_type(sel)) %in%
+                                                            c("LINESTRING", "MULTILINESTRING"), ],
+                     get_path = geometry, get_color = "#ffd166", width_units = "pixels",
+                     get_width = 10, opacity = 0.5, pickable = FALSE) %>%
+      add_scatterplot_layer(id = "cln_selected_point", data = sel[as.character(st_geometry_type(sel)) == "POINT", ],
+                            get_position = geometry, radius_units = "pixels", get_radius = 11,
+                            filled = FALSE, stroked = TRUE, get_line_color = "#ffd166",
+                            line_width_units = "pixels", get_line_width = 3, pickable = FALSE)
+  })
+
+  output$cln_chart <- renderPlotly({
+    node <- suppressWarnings(as.integer(input$cln_node_pick))
+    msg <- if (is.null(bundle_dir())) "Open a review bundle to see CLN heads and pumping."
+           else if (is.null(bundle_cln()) || is.null(bundle_cln_heads())) "This bundle has no CLN nodes / CLN heads."
+           else if (is.na(node)) "Pick a CLN node on the map or in 6. Review Layers."
+    if (!is.null(msg)) {
+      return(cf_plotly_style(plotly::plotly_empty(type = "scatter", mode = "markers") %>%
+        plotly::layout(title = list(text = msg, y = 0.5, font = list(color = CF_PLOT_MUTED, size = 13))),
+        legend = NA))
+    }
+    times <- bundle_times()
+    series <- rb_cln_series(bundle_cln_heads(), cln_beds(), times, node)
+    pump <- rb_cln_pumping(bundle_pumping(), times, node)
+    a <- st_drop_geometry(bundle_cln())
+    a <- a[a$cln_node == node, , drop = FALSE]
+    title <- paste0(if ("name" %in% names(a)) a$name[1] else "CLN", " (node ", node,
+                    if ("kind" %in% names(a)) paste0(", ", a$kind[1]), ")",
+                    if (!is.null(pump)) paste0(" — pumping: ", paste(unique(pump$well), collapse = ", ")))
+    rb_cln_plot(series, pump, title = title, x_title = rb_period_axis(times)$title)
+  })
   
+  # --- Review bundle: parameter fields --------------------------------------
+  field_index <- reactive(rb_field_index(bundle_dir()))
+  field_is_log <- reactive(identical(input$data_display, "Field") && isTRUE(input$field_log))
+
+  observeEvent(field_index(), {
+    fi <- field_index()
+    fields <- if (is.null(fi)) character(0) else unique(fi$field)
+    updateSelectInput(session, "field_name", choices = fields, selected = fields[1])
+  }, ignoreNULL = FALSE)
+
+  observeEvent(input$field_name, {
+    fi <- field_index()
+    req(fi)
+    runs <- fi$run[fi$field == input$field_name]
+    cur <- isolate(input$field_run)
+    sel <- if (isTRUE(cur %in% runs)) cur else if ("run" %in% runs) "run" else runs[1]
+    updateRadioButtons(session, "field_run", choices = runs, selected = sel, inline = TRUE)
+    updateCheckboxInput(session, "field_log", value = rb_field_default_log(input$field_name))
+  })
+
+  observeEvent(input$data_display, {
+    # Without a baseline there is nothing to subtract: the map would show plain
+    # heads under a Drawdown / Difference title. Say so and go back to Heads.
+    if (input$data_display %in% c("Drawdown", "Difference") && is.null(hds2_path())) {
+      showNotification(paste(input$data_display, "needs a baseline run (Heads_baseline.parquet",
+                             "in a bundle, or a baseline upload). Showing heads."),
+                       type = "warning")
+      updateRadioButtons(session, "data_display", selected = "Heads")
+    }
+    if (identical(input$data_display, "Field") && is.null(field_index())) {
+      showNotification("No parameter fields: open a review bundle that has Fields.parquet.",
+                       type = "warning")
+    }
+  })
+
   # Number of nodes per layer (cached)
   nodes_per_layer <- reactive({
     req(head_ds())
@@ -1241,17 +1689,25 @@ server <- function(input, output, session) {
       filter(layer == lay_target, nodenumberL1 == nl1_target) %>%
       collect()
       
-    if (input$data_display == "Drawdown" && !is.null(hds2_path())) {
+    # With a baseline loaded, keep its head too: the Heads view draws it as a
+    # second line, Drawdown / Difference plot the comparison instead.
+    if (!is.null(hds2_path())) {
       h2_time <- open_dataset(hds2_path()) %>%
         filter(layer == lay_target, nodenumberL1 == nl1_target) %>%
         collect()
       if (nrow(h2_time) > 0) {
-        h_time <- h_time %>% inner_join(h2_time %>% rename(h_base = h), by = c("layer", "nodenumberL1", "SP"))
-        h_time$h <- ifelse(h_time$h == 999 | h_time$h_base == 999, 999, h_time$h_base - h_time$h)
+        h_time <- h_time %>% left_join(h2_time %>% select(SP, h_base = h), by = "SP")
+        h_time$h_base[is_inactive(h_time$h_base)] <- NA_real_
+        if (input$data_display %in% c("Drawdown", "Difference")) {
+          h_time$h <- ifelse(is_inactive(h_time$h) | is.na(h_time$h_base), NA_real_,
+                             rb_compare(h_time$h, h_time$h_base, input$data_display))
+          h_time$h_base <- NULL
+        }
       }
     }
-      
+
     h_time %>%
+      mutate(layer_label = paste0("layer ", lay_target, ", cell ", nl1_target)) %>%
       left_join(time_df(), by = "SP")
   })
   
@@ -1259,7 +1715,12 @@ server <- function(input, output, session) {
   # domain terms rather than a generic "head distribution" label.
   output$map_title <- renderText({
     if (identical(input$data_display, "Drawdown")) {
-      "Drawdown Distribution Map"
+      "Drawdown Map (baseline − run)"
+    } else if (identical(input$data_display, "Difference")) {
+      "Head Difference Map (run − baseline)"
+    } else if (identical(input$data_display, "Field")) {
+      paste0("Parameter Field: ", input$field_name %||% "", " (", input$field_run %||% "", ")",
+             if (field_is_log()) ", log scale" else "")
     } else {
       "Groundwater Head Distribution Map"
     }
@@ -1268,17 +1729,50 @@ server <- function(input, output, session) {
   # Plotly Chart
   output$chart <- renderPlotly({
     req(node_hydr())
-    
+
+    # A node can legitimately have NO rows: a dataset may omit inactive cells
+    # rather than pad them with a sentinel head (scripts/make_demo.py
+    # --drop-inactive does exactly that, which shrinks a bundle by ~60%).
+    # Say so plainly instead of letting ggplot fail on an empty frame — the
+    # cell really is outside the active model, which is the same answer the
+    # sentinel path gives, just arrived at differently.
+    if (nrow(node_hydr()) == 0) {
+      return(
+        plotly::plot_ly() %>%
+          plotly::layout(
+            annotations = list(
+              text = paste0("Node #", input$nodenumber,
+                            " is outside the active model (no simulated head)."),
+              showarrow = FALSE, font = list(color = "#a99fce", size = 14),
+              xref = "paper", yref = "paper", x = 0.5, y = 0.5
+            ),
+            xaxis = list(visible = FALSE), yaxis = list(visible = FALSE),
+            plot_bgcolor = "#241046", paper_bgcolor = "#241046"
+          )
+      )
+    }
+
     time_col <- input$radio_time_unit
     lbls <- c("time" = "Time (Days)", "SP" = "Stress Period", "date" = "Calendar Date")
     
-    p <- ggplot(node_hydr(), aes(x = .data[[time_col]], y = h)) +
-      geom_line(linewidth = 1, color = "#00bc8c") +
-      geom_point(size = 2, color = "#00bc8c", alpha = 0.7) +
+    hd <- node_hydr()
+    what <- switch(input$data_display, Drawdown = "Drawdown hydrograph",
+                   Difference = "Head difference (run − baseline)", "Hydrograph")
+    p <- ggplot(hd, aes(x = .data[[time_col]], y = h))
+    # Heads view with a baseline loaded: the baseline as a dashed second line.
+    if ("h_base" %in% names(hd) && any(!is.na(hd$h_base))) {
+      p <- p + geom_line(aes(y = h_base), linewidth = 0.8, color = "#a99fce",
+                         linetype = "dashed", na.rm = TRUE)
+      what <- "Hydrograph (dashed: baseline)"
+    }
+    p <- p +
+      geom_line(linewidth = 1, color = "#00bc8c", na.rm = TRUE) +
+      geom_point(size = 2, color = "#00bc8c", alpha = 0.7, na.rm = TRUE) +
       labs(
-        title = paste(if(input$data_display == "Drawdown") "Drawdown Hydrograph for Node #" else "Hydrograph for Node #", input$nodenumber),
+        title = paste0(what, " for node #", input$nodenumber, " (", hd$layer_label[1], ")"),
         x = lbls[time_col],
-        y = if(input$data_display == "Drawdown") "Drawdown (m)" else "Head (m)"
+        y = switch(input$data_display, Drawdown = "Drawdown (m)",
+                   Difference = "Difference (m)", "Head (m)")
       ) +
       theme_minimal(base_family = "Inter") +
       theme(

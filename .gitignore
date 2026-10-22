@@ -11,20 +11,18 @@ data/
 app_backup.R
 __pycache__/
 
-# Demo/test data is NOT committed to git (can be large). It is still copied into
-# the Docker image via the build context - see the !demo/ rule in .dockerignore.
-demo/
-
-# Local AI-assistant instruction/scratch files - never publish (may hold personal
-# env paths / private notes).
-# ai_roadmap.md = private business/monetisation strategy (closed-source vault
-# plan); this is a PUBLIC repo, so it must never be committed here.
-ai_roadmap.md
-CLAUDE.md
-ANTIGRAVITY.md
-Antigravity.md
-GEMINI.md
-AGENTS.md
-.cursorrules
-.aider*
-.claude/
+# Demo data: TWO sizes, by design (ai_roadmap.md 3.2).
+#   demo/hpm_2yr/  small, TRACKED   -> published to the mirror AND in the image,
+#                                     so a clone of the showroom can actually
+#                                     demonstrate something
+#   demo/hpm/      full,  ignored   -> image only, via the !demo/ rule in
+#                                     .dockerignore; too large for git
+# Built from one source: scripts/make_demo.py --frames N (the full bundle used
+# --frames all = 420 monthly periods).
+demo/*
+!demo/hpm_2yr/
+# Re-include the small demo's DATA too. Negating the directory alone is not
+# enough: the *.parquet / *.csv rules above still match files inside it, so the
+# bundle would commit as five stray .txt sidecars with no data — a demo that
+# silently demonstrates nothing.
+!demo/hpm_2yr/**

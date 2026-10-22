@@ -17,8 +17,9 @@
 # after the library() block gives predictable ordering. bslib calls are also
 # namespace-qualified (bslib::) as insurance if an app sources this early.
 #
-# Monorepo note: this lives per-app for now (Docker build context); when the
-# apps merge into my-shiny-platform it collapses to one shared lib/cf_theme.R.
+# This file is the single shared copy. Each app sees it at lib/cf_theme.R —
+# via a symlink during development, and copied in when its image is built —
+# so the source() call above is identical in every app.
 # =============================================================================
 
 CF_PRIMARY   <- "#00bc8c" # teal-green (site h1/h2 + buttons)
@@ -64,6 +65,16 @@ cf_custom_css <- "
   .app-header-links { position: absolute !important; right: 16px; top: 50%; transform: translateY(-50%); z-index: 5; display: flex; gap: 8px; align-items: center; }
   .app-header-links .btn { color: #32fbe2 !important; border-color: #32fbe2 !important; background: rgba(50,251,226,0.08) !important; }
   .app-header-links .btn:hover { background: #32fbe2 !important; color: #150726 !important; box-shadow: 0 0 14px rgba(50,251,226,0.5) !important; }
+  /* Phones / narrow windows: the absolutely positioned links sat ON TOP of the
+     title (found on a phone 2026-10-06). Below 768px they flow onto their own
+     line under the title, wrapping if needed, and the title shrinks a little. */
+  @media (max-width: 768px) {
+    .navbar .bslib-page-title, .navbar .navbar-brand { display: flex !important; flex-wrap: wrap; align-items: center; gap: 6px; white-space: normal; width: 100%; }
+    .app-title-text { font-size: 1rem; line-height: 1.25; }
+    .app-beta-badge { margin-left: 8px; padding: 2px 9px; font-size: 0.7rem; }
+    .app-header-links { position: static !important; transform: none !important; flex-wrap: wrap; gap: 6px; width: 100%; margin-top: 4px; }
+    .app-header-links .btn { font-size: 0.75rem; padding: 2px 10px; }
+  }
   h1, h2, h3, h4 { color: #00bc8c; }
   /* Only actual Crayfisher brand references get the wordmark font (Orbitron);
      matches the website scoping, which keeps it off general headings/body text. */
@@ -99,3 +110,16 @@ cf_custom_css <- "
   a { color: #00bc8c; }
   a:hover { color: #32fbe2; }
 "
+
+
+# Browser-tab icon: the Crayfisher logo as a solid teal silhouette on a
+# transparent background (the logo's dark square showed as a black box in
+# light tabs), with a thin dark-teal outline so it also reads on light tabs
+# (2026-10-08), 32 px, inline so no static-file
+# plumbing is needed in any app or build context (2026-10-08; was a blank or
+# emoji icon). Use inside the page: tags$head(cf_favicon_tag()).
+cf_favicon_tag <- function() {
+  htmltools::tags$link(rel = "icon", type = "image/png", href = paste0(
+    "data:image/png;base64,",
+    "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAMAAABEpIrGAAACH1BMVEUAAAAUuJYUuJYUuJYUuJYUuJYUuJYUuJYUuJYUuJYUuJYUuJYUuJYUuJYUuJYUuJYUuJYUuJYUuJYUuJYUuJYUuJYUuJYUuJYUuJYUuJYUuJYUuJYUuJYUuJYUuJYUuJYUuJYUuJYUuJYUuJYUuJYUuJYUuJYUuJYUuJYUuJYUuJYUuJYUuJYUuJYUuJYUuJYUuJYUuJYUuJYUuJYUuJYLeWQLemULd2IOkHYJbVsJblsKdmIHXE4MgWsOkXcHXU4MgmsHX1AKc18HXk8IZFQKb10NiHAHW0wNh28JblwIY1MJalgPlXoOj3YIZlYOjnUKcF0PlXsJaVcHWkwNhW4Ni3MHW00KdWEMhW0HXE0MgmwIZVUKcV4MgWoMfmkKdGAPlHkIZlUNi3IPmX0IaFcMg2wLeGQKdGEOjXQKc2AJalkPmH0NjHMLd2MQoIMPl3wRpYcTtJMTs5IRp4gLfmgPmn8Pmn4Le2YRp4kRpIYQnYEOkngRo4USr48QnoESrIwSqosQooQQn4ISrY0Nhm8Qm38SsI8MfmgRqIkJaVgSrI0Sq4sRooUMgGoJaFcQnoIPlnsLfGYTtZMRqIoNinIQnIATtpUUuJYTtpQIZVQKcl8Nhm4HYFEQoYQSro4TspELfWcHYFAJbFoJb1wOk3gNiXETt5UTsZEOj3UOjHQOkHcSqYoPlHoPmX4QnYATsZASq4wMhG0TsJAIZ1YLfWjcHKtEAAAANXRSTlMAARIwSSklSjEUAgobIRgGSCcJHxwNBCM6LhFVUys3Rk1CHSIgLS81Aws2NDkyFTgqFxoHE9+oddYAAALGSURBVDjLdVP3Q1JRFL4PK80BooZl25YtywzCwXM8AjSZDx+ipDIElPGQ0icSigwjB2GoQCVWSpY2tPoDe4SIin2/3O+MO8453wXgHyBKzrHjENgFdCI372Q+yKCgsIhKKyimp216cQmNWlp2Kr0DYpRQyk+fqThLTdnUc5TzF+iUEga07xBAO3Exl8lIMgbr0mU6DWSj4hG7LrnWsxsqwJFo5MCNADTBzY3gP2hhtwLQykaOikHcSvJJj3l8vqCNtCrboUMJTzpIP0CEIpG4iSQSqWz/bgig8k6MZKhcoehCSaIUdqNJfwo9VwDSIcHyAQRUT3sl5JKP9fU3gSJ1Kq7USIBMqxto0Bt0PWKjWjeo6BsYMqmByoylqoMtoM+qxm3D9mfPR0aJMbvdgcvGVYDpVKaOMDiRoRdMlmtCMOme8ti8Pv80wfSIENiQbpCGQF9ajYGJV5yxmdm5+eBrt9FDoESnMl2GLiTBFmxGDi6YeTMcHpB2iwMsfps0mCl00L+oFi8FBbblSCRq5QWXjDHeyOBe+KoE4Wr8JmfI4LdHIt7QW6nT719sRySlu32qe2due0+scIjx+Oqqyz3r/8CZY32s18g/pToFAWxtfYSnNbETrs8brmhc8MWEy7VwPR9kBtKi+jqVSJjikeVoJB5K8DxmVcuhaXGdML7piHvDWyvGEOzkHh43ZsC1/fi3sDcwJeyHtd8blAfjyPwPn8W3KXXZf8bXhT4Lz9N84ApRZ5dCBVD+fHzDtb3AR0Gr3ifWZeJ8gR7Nu0YSi9vltulJcv0Gn0hgewlVdTdBXnlSSLPT8YAk+XVuAWSt6oCmbheSL9kJTLodO+TtpXcyetrF3Wogw92egA3fGh0C1HtZsr5fjSaWt2ZWf4W3o2a0Jicr4QEV/P6z5LBOrIz36kBNWVZCbTUp6pg6xo1xSVk/rE37/wIXrcl/XhQTBQAAAABJRU5ErkJggg=="))
+}
